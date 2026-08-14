@@ -3,6 +3,9 @@
 [ext_resource type="Script" uid="uid://b3uybmjlsx3th" path="res://items/dropped_item.gd" id="1_clxf8"]
 [ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="2_f38jm"]
 
+[sub_resource type="BoxMesh" id="BoxMesh_3etnt"]
+size = Vector3(0.2, 0.2, 0.2)
+
 [sub_resource type="BoxShape3D" id="BoxShape3D_clxf8"]
 size = Vector3(0.3, 0.3, 0.3)
 
@@ -14,9 +17,8 @@ collision_layer = 4
 script = ExtResource("1_clxf8")
 atlas = ExtResource("2_f38jm")
 
-[node name="Sprite3D" type="Sprite3D" parent="." unique_id=1956576568]
-pixel_size = 0.025
-billboard = 1
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1798733473]
+mesh = SubResource("BoxMesh_3etnt")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=126277151]
 shape = SubResource("BoxShape3D_clxf8")

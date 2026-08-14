@@ -127,3 +127,42 @@ static func get_max_stack(item_id: int) -> int:
 			return 0
 
 	return 64
+
+static func get_item_name(item_id: int) -> String:
+	match item_id:
+		Item.DIRT:
+			return "Tierra"
+		Item.STONE:
+			return "Piedra"
+		Item.WOOD:
+			return "Madera"
+		Item.SAND:
+			return "Arena"
+		Item.COAL:
+			return "Carbón"
+		Item.RAW_IRON:
+			return "Hierro en bruto"
+		Item.RAW_COPPER:
+			return "Cobre en bruto"
+		Item.RAW_TIN:
+			return "Estaño en bruto"
+		Item.RAW_GOLD:
+			return "Oro en bruto"
+		Item.RAW_TUNGSTEN:
+			return "Tungsteno en bruto"
+		Item.RAW_PLATINUM:
+			return "Platino en bruto"
+		Item.IRON_INGOT:
+			return "Lingote de hierro"
+		Item.COPPER_INGOT:
+			return "Lingote de cobre"
+		Item.TIN_INGOT:
+			return "Lingote de estaño"
+		Item.GOLD_INGOT:
+			return "Lingote de oro"
+		Item.TUNGSTEN_INGOT:
+			return "Lingote de tungsteno"
+		Item.PLATINUM_INGOT:
+			return "Lingote de platino"
+
+	return ""

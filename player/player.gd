@@ -142,6 +142,7 @@ func break_block() -> void:
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
+	query.collision_mask = 1
 
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 
@@ -188,6 +189,7 @@ func place_block() -> void:
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
+	query.collision_mask = 1
 
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 
@@ -275,6 +277,7 @@ func update_block_highlight() -> void:
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	query.collide_with_areas = false
 	query.collide_with_bodies = true
+	query.collision_mask = 1
 
 	var result := get_world_3d().direct_space_state.intersect_ray(query)
 

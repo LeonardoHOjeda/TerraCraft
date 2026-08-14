@@ -76,6 +76,11 @@ func create_slot(index: int) -> PanelContainer:
 	button.flat = true
 	button.mouse_filter = Control.MOUSE_FILTER_STOP
 
+	button.mouse_entered.connect(
+	func() -> void:
+		update_slot_tooltip(index)
+	)
+
 	var icon := TextureRect.new()
 	icon.position = Vector2(8, 8)
 	icon.size = Vector2(ICON_SIZE, ICON_SIZE)
@@ -138,6 +143,7 @@ func update_slot(index: int) -> void:
 
 	slot_icons[index].texture = atlas_texture
 	amount_labels[index].text = str(amount) if amount > 1 else ""
+	update_slot_tooltip(index)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("inventory"):
@@ -308,3 +314,20 @@ func clear_cursor() -> void:
 	cursor_item = ItemRegistry.Item.NONE
 	cursor_amount = 0
 	update_cursor_visual()
+
+func update_slot_tooltip(index: int) -> void:
+	if player == null:
+		return
+
+	var item_id := player.inventory.get_item(index)
+
+	if item_id == ItemRegistry.Item.NONE:
+		slot_buttons[index].tooltip_text = ""
+		return
+
+	var amount := player.inventory.get_amount(index)
+	var item_name := ItemRegistry.get_item_name(item_id)
+
+	slot_buttons[index].tooltip_text = (
+		item_name + "\nCantidad: " + str(amount)
+	)
