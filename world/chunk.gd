@@ -14,6 +14,14 @@ var detail_noise: FastNoiseLite
 var biome_noise: FastNoiseLite
 var cave_noise: FastNoiseLite
 
+var coal_noise: FastNoiseLite
+var iron_noise: FastNoiseLite
+var copper_noise: FastNoiseLite
+var tin_noise: FastNoiseLite
+var gold_noise: FastNoiseLite
+var tungsten_noise: FastNoiseLite
+var platinum_noise: FastNoiseLite
+
 var terrain_height: int = 8
 var base_height: int = 4
 
@@ -42,15 +50,32 @@ func initialize(
 	new_detail_noise: FastNoiseLite,
 	new_biome_noise: FastNoiseLite,
 	new_cave_noise: FastNoiseLite,
+	new_coal_noise: FastNoiseLite,
+	new_iron_noise: FastNoiseLite,
+	new_copper_noise: FastNoiseLite,
+	new_tin_noise: FastNoiseLite,
+	new_gold_noise: FastNoiseLite,
+	new_tungsten_noise: FastNoiseLite,
+	new_platinum_noise: FastNoiseLite,
 	new_terrain_height: int,
 	new_base_height: int
 ) -> void:
 	world = new_world
 	chunk_position = new_chunk_position
+
 	continental_noise = new_continental_noise
 	detail_noise = new_detail_noise
 	biome_noise = new_biome_noise
 	cave_noise = new_cave_noise
+
+	coal_noise = new_coal_noise
+	iron_noise = new_iron_noise
+	copper_noise = new_copper_noise
+	tin_noise = new_tin_noise
+	gold_noise = new_gold_noise
+	tungsten_noise = new_tungsten_noise
+	platinum_noise = new_platinum_noise
+
 	terrain_height = new_terrain_height
 	base_height = new_base_height
 
@@ -119,7 +144,7 @@ func generate_blocks() -> void:
 					blocks[x][y][z] = underground_block
 
 				else:
-					blocks[x][y][z] = BlockRegistry.Block.STONE
+					blocks[x][y][z] = get_ore_block(world_x, y, world_z)
 
 
 func get_block(position: Vector3i) -> int:
@@ -340,30 +365,39 @@ func get_face_vertices(direction: Vector3i) -> Array[Vector3]:
 		Vector3(1, 0, 0),
 	]
 
-func remove_block(position: Vector3i) -> void:
+func remove_block(position: Vector3i) -> int:
 	if (position.x < 0 or position.y < 0 or position.z < 0 or position.x >= SIZE_XZ or position.y >= HEIGHT or position.z >= SIZE_XZ):
-		return
+		return BlockRegistry.Block.AIR
 
-	if blocks[position.x][position.y][position.z] == BlockRegistry.Block.AIR:
-		return
+	var block: int = blocks[position.x][position.y][position.z]
 
-	if blocks[position.x][position.y][position.z] == BlockRegistry.Block.BEDROCK:
-		return
+	if block == BlockRegistry.Block.AIR:
+		return BlockRegistry.Block.AIR
+
+	if block == BlockRegistry.Block.BEDROCK:
+		return BlockRegistry.Block.AIR
 
 	blocks[position.x][position.y][position.z] = BlockRegistry.Block.AIR
 
-	rebuild_mesh()
+	return block
 
-func place_block(position: Vector3i, block: int) -> void:
-	if (position.x < 0 or position.y < 0 or position.z < 0 or position.x >= SIZE_XZ or position.y >= HEIGHT or position.z >= SIZE_XZ):
-		return
+func place_block(position: Vector3i, block: int) -> bool:
+	if (
+		position.x < 0
+		or position.y < 0
+		or position.z < 0
+		or position.x >= SIZE_XZ
+		or position.y >= HEIGHT
+		or position.z >= SIZE_XZ
+	):
+		return false
 
 	if blocks[position.x][position.y][position.z] != BlockRegistry.Block.AIR:
-		return
+		return false
 
 	blocks[position.x][position.y][position.z] = block
 
-	rebuild_mesh()
+	return true
 
 
 func get_surface_height(x: int, z: int) -> int:
@@ -421,3 +455,48 @@ func get_neighbor_block(local_position: Vector3i) -> int:
 	)
 
 	return world.get_block_at_world_position(world_position)
+
+func get_ore_block(world_x: int, y: int, world_z: int) -> int:
+	if y <= 45:
+		var value := coal_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.58:
+			return BlockRegistry.Block.COAL
+
+	if y <= 40:
+		var value := copper_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.60:
+			return BlockRegistry.Block.COPPER
+
+	if y <= 35:
+		var value := tin_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.62:
+			return BlockRegistry.Block.TIN
+
+	if y <= 32:
+		var value := iron_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.64:
+			return BlockRegistry.Block.IRON
+
+	if y <= 18:
+		var value := gold_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.68:
+			return BlockRegistry.Block.GOLD
+
+	if y <= 14:
+		var value := tungsten_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.72:
+			return BlockRegistry.Block.TUNGSTEN
+
+	if y <= 10:
+		var value := platinum_noise.get_noise_3d(world_x, y, world_z)
+
+		if value > 0.76:
+			return BlockRegistry.Block.PLATINUM
+
+	return BlockRegistry.Block.STONE

@@ -1,6 +1,8 @@
 [gd_scene format=3 uid="uid://7o6oqd6peqhl"]
 
 [ext_resource type="Script" uid="uid://cxh35kyexnmwq" path="res://player/player.gd" id="1_oul6g"]
+[ext_resource type="PackedScene" uid="uid://dj8ymiri8tfg0" path="res://items/inventory.tscn" id="2_g1dw6"]
+[ext_resource type="Script" uid="uid://2556m5f468l0" path="res://items/inventory.gd" id="3_yw30f"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_kqu6x"]
 radius = 0.35
@@ -16,14 +18,25 @@ material = SubResource("StandardMaterial3D_oul6g")
 size = Vector3(1.01, 1.01, 1.01)
 
 [node name="Player" type="CharacterBody3D" unique_id=780558422]
+collision_layer = 2
 script = ExtResource("1_oul6g")
+speed = null
+jump_velocity = null
+mouse_sensitivity = null
+interaction_distance = null
+break_cooldown = null
+place_cooldown = null
 fly_speed = 25.0
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1394757391]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 0)
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1676621390]
 shape = SubResource("CapsuleShape3D_kqu6x")
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=1394757391]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 0)
+[node name="BlockHighlight" type="MeshInstance3D" parent="." unique_id=2140064409]
+top_level = true
+mesh = SubResource("BoxMesh_oul6g")
 
 [node name="Crosshair" type="Label" parent="." unique_id=1866103642]
 anchors_preset = 8
@@ -39,6 +52,5 @@ grow_horizontal = 2
 grow_vertical = 2
 text = "+"
 
-[node name="BlockHighlight" type="MeshInstance3D" parent="." unique_id=2140064409]
-top_level = true
-mesh = SubResource("BoxMesh_oul6g")
+[node name="Inventory" parent="." unique_id=1096089921 instance=ExtResource("2_g1dw6")]
+script = ExtResource("3_yw30f")

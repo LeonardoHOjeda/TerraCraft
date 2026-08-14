@@ -14,6 +14,7 @@ extends CharacterBody3D
 @onready var hotbar = get_tree().get_first_node_in_group("hotbar")
 @onready var block_highlight: MeshInstance3D = $BlockHighlight
 @onready var world: World = get_tree().get_first_node_in_group("world")
+@onready var inventory: Inventory = $Inventory
 
 var gravity: float = 20.0
 var break_timer: float = 0.0
@@ -22,6 +23,7 @@ var place_timer: float = 0.0
 var selected_slot: int = 0
 
 var is_flying: bool = false
+var inventory_open: bool = false
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -78,11 +80,11 @@ func _physics_process(delta: float) -> void:
 	break_timer = max(break_timer - delta, 0.0)
 	place_timer = max(place_timer - delta, 0.0)
 
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and break_timer <= 0.0:
+	if (not inventory_open and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and break_timer <= 0.0):
 		break_block()
 		break_timer = break_cooldown
 
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and place_timer <= 0.0:
+	if (not inventory_open and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and place_timer <= 0.0):
 		place_block()
 		place_timer = place_cooldown
 
@@ -162,7 +164,22 @@ func break_block() -> void:
 
 	var local_block_position := world_block_position - Vector3i(chunk.global_position)
 
-	chunk.remove_block(local_block_position)
+	var broken_block := chunk.remove_block(local_block_position)
+
+	if broken_block == BlockRegistry.Block.AIR:
+		return
+
+	world.rebuild_chunk_and_neighbors(chunk, local_block_position)
+
+	var dropped_item := ItemRegistry.get_drop(broken_block)
+
+	if dropped_item == ItemRegistry.Item.NONE:
+		return
+
+	world.spawn_item(
+		dropped_item,
+		Vector3(world_block_position) + Vector3(0.5, 0.5, 0.5)
+	)
 
 func place_block() -> void:
 	var from := camera.global_position
@@ -192,14 +209,26 @@ func place_block() -> void:
 	if world == null or hotbar == null:
 		return
 
+	var selected_block: int = hotbar.get_selected_block()
+
+	if selected_block == BlockRegistry.Block.AIR:
+		return
+
 	var target_chunk := world.get_chunk_at_world_position(block_position)
 
 	if target_chunk == null:
 		return
 
 	var local_block_position := block_position - Vector3i(target_chunk.global_position)
+	
 
-	target_chunk.place_block(local_block_position, hotbar.get_selected_block())
+	if target_chunk.place_block(local_block_position, selected_block):
+		world.rebuild_chunk_and_neighbors(
+			target_chunk,
+			local_block_position
+		)
+
+		hotbar.remove_selected_item(1)
 
 func is_block_inside_player(block_position: Vector3i) -> bool:
 	var block_min := Vector3(block_position)
@@ -232,11 +261,11 @@ func is_block_inside_player(block_position: Vector3i) -> bool:
 	)
 
 func select_slot(index: int) -> void:
-	if hotbar:
-		hotbar.set_selected_slot(index)
+	if hotbar == null:
+		return
 
-	if hotbar:
-		hotbar.set_selected_slot(selected_slot)
+	selected_slot = wrapi(index, 0, 9)
+	hotbar.set_selected_slot(selected_slot)
 
 
 func update_block_highlight() -> void:
@@ -280,3 +309,9 @@ func set_flying(enabled: bool) -> void:
 	velocity = Vector3.ZERO
 
 	collision_shape.set_deferred("disabled", enabled)
+
+func collect_item(item_id: int, amount: int) -> void:
+	var remaining := inventory.add_item(item_id, amount)
+
+	if remaining > 0:
+		print("Inventario lleno. Quedaron ", remaining, " items.")

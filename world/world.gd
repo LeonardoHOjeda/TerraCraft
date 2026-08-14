@@ -12,11 +12,21 @@ extends Node3D
 @export var base_height: int = 20
 @export var terrain_height: int = 20
 
+@export var dropped_item_scene: PackedScene
+
 var continental_noise := FastNoiseLite.new()
 var detail_noise := FastNoiseLite.new()
 var biome_noise := FastNoiseLite.new()
 var tree_noise := FastNoiseLite.new()
 var cave_noise := FastNoiseLite.new()
+
+var coal_noise := FastNoiseLite.new()
+var iron_noise := FastNoiseLite.new()
+var copper_noise := FastNoiseLite.new()
+var tin_noise := FastNoiseLite.new()
+var gold_noise := FastNoiseLite.new()
+var tungsten_noise := FastNoiseLite.new()
+var platinum_noise := FastNoiseLite.new()
 
 func _ready() -> void:
 	setup_noise()
@@ -57,6 +67,14 @@ func setup_noise() -> void:
 	cave_noise.fractal_gain = 0.5
 	cave_noise.fractal_lacunarity = 2.0
 
+	setup_ore_noise(coal_noise, seed + 10, 0.09)
+	setup_ore_noise(iron_noise, seed + 11, 0.08)
+	setup_ore_noise(copper_noise, seed + 12, 0.085)
+	setup_ore_noise(tin_noise, seed + 13, 0.085)
+	setup_ore_noise(gold_noise, seed + 14, 0.07)
+	setup_ore_noise(tungsten_noise, seed + 15, 0.06)
+	setup_ore_noise(platinum_noise, seed + 16, 0.055)
+
 
 func generate_world() -> void:
 	var half_x := world_size_x / 2
@@ -89,6 +107,13 @@ func create_chunk(chunk_x: int, chunk_z: int) -> void:
 		detail_noise,
 		biome_noise,
 		cave_noise,
+		coal_noise,
+		iron_noise,
+		copper_noise,
+		tin_noise,
+		gold_noise,
+		tungsten_noise,
+		platinum_noise,
 		terrain_height,
 		base_height
 	)
@@ -244,3 +269,54 @@ func rebuild_all_chunks() -> void:
 	for child in get_children():
 		if child is Chunk:
 			child.rebuild_mesh()
+
+
+func setup_ore_noise(noise: FastNoiseLite, noise_seed: int, frequency: float) -> void:
+	noise.seed = noise_seed
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = frequency
+	noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	noise.fractal_octaves = 2
+	noise.fractal_gain = 0.5
+
+func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
+	if dropped_item_scene == null:
+		return
+
+	if item_id == ItemRegistry.Item.NONE:
+		return
+
+	var dropped_item := dropped_item_scene.instantiate() as DroppedItem
+
+	if dropped_item == null:
+		return
+
+	dropped_item.item_id = item_id
+	dropped_item.amount = amount
+
+	add_child(dropped_item)
+
+	dropped_item.global_position = position
+
+func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
+	chunk.rebuild_mesh()
+
+	if local_position.x == 0:
+		rebuild_chunk_at(chunk.chunk_position + Vector2i(-1, 0))
+
+	elif local_position.x == Chunk.SIZE_XZ - 1:
+		rebuild_chunk_at(chunk.chunk_position + Vector2i(1, 0))
+
+	if local_position.z == 0:
+		rebuild_chunk_at(chunk.chunk_position + Vector2i(0, -1))
+
+	elif local_position.z == Chunk.SIZE_XZ - 1:
+		rebuild_chunk_at(chunk.chunk_position + Vector2i(0, 1))
+
+func rebuild_chunk_at(chunk_position: Vector2i) -> void:
+	var chunk_name := "Chunk_%d_%d" % [chunk_position.x, chunk_position.y]
+
+	var chunk := get_node_or_null(chunk_name) as Chunk
+
+	if chunk:
+		chunk.rebuild_mesh()

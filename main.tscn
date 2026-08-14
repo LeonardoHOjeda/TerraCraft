@@ -2,26 +2,32 @@
 
 [ext_resource type="PackedScene" uid="uid://7o6oqd6peqhl" path="res://player/player.tscn" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://ceiwl42aeeftp" path="res://hotbar.gd" id="3_h2yge"]
-[ext_resource type="Texture2D" uid="uid://uhemud13dr3i" path="res://blocks/textures/Atlas.png" id="4_1bvp3"]
+[ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/Atlas.png" id="4_1bvp3"]
 [ext_resource type="PackedScene" uid="uid://bx8g1e51p5xwl" path="res://world/world.tscn" id="4_lquwl"]
 [ext_resource type="Script" uid="uid://cxoxcscd60dt8" path="res://biome_debug.gd" id="5_lquwl"]
 [ext_resource type="Script" uid="uid://bkhfw1rvpglw0" path="res://debug_panel.gd" id="6_7mycd"]
+[ext_resource type="Script" uid="uid://cuhw0djt0inwo" path="res://inventory_ui.gd" id="7_272bh"]
+[ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="8_5vw27"]
 
 [node name="Main" type="Node3D" unique_id=828085398]
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
-world_size_x = 32
-world_size_z = 32
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
+speed = 5.0
+jump_velocity = 7.0
+mouse_sensitivity = 0.002
+interaction_distance = 6.0
+break_cooldown = 0.22
+place_cooldown = 0.12
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=2126553105]
 transform = Transform3D(0.8660254, 0.35355338, -0.35355338, 0, 0.70710677, 0.70710677, 0.5, -0.6123724, 0.6123724, 0, 0, 0)
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=1670054348]
 
-[node name="Hotbar" type="HBoxContainer" parent="UI" unique_id=1096804252 groups=["hotbar"]]
+[node name="Hotbar" type="HBoxContainer" parent="UI" unique_id=1096804252 node_paths=PackedStringArray("player") groups=["hotbar"]]
 anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
@@ -35,6 +41,7 @@ grow_vertical = 0
 theme_override_constants/separation = 4
 script = ExtResource("3_h2yge")
 atlas = ExtResource("4_1bvp3")
+player = NodePath("../../Player")
 
 [node name="BiomeDebug" type="TextureRect" parent="UI" unique_id=1910060907 node_paths=PackedStringArray("world")]
 visible = false
@@ -55,3 +62,41 @@ theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
 script = ExtResource("6_7mycd")
 player = NodePath("../../Player")
 world = NodePath("../../World")
+
+[node name="InventoryPanel" type="PanelContainer" parent="UI" unique_id=1916807331 node_paths=PackedStringArray("player")]
+custom_minimum_size = Vector2(500, 260)
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -250.0
+offset_top = -130.0
+offset_right = 250.0
+offset_bottom = 130.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("7_272bh")
+atlas = ExtResource("8_5vw27")
+player = NodePath("../../Player")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="UI/InventoryPanel" unique_id=1560835148]
+layout_mode = 2
+
+[node name="InventoryGrid" type="GridContainer" parent="UI/InventoryPanel/VBoxContainer" unique_id=143800528]
+custom_minimum_size = Vector2(464, 152)
+layout_mode = 2
+columns = 9
+
+[node name="HotbarGrid" type="GridContainer" parent="UI/InventoryPanel/VBoxContainer" unique_id=314725763]
+layout_mode = 2
+columns = 9
+
+[node name="CursorItem" type="TextureRect" parent="UI/InventoryPanel" unique_id=1854744409]
+layout_mode = 2
+mouse_filter = 2
+
+[node name="Amount" type="Label" parent="UI/InventoryPanel/CursorItem" unique_id=907375975]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
