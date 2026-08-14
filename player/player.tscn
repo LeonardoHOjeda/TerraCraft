@@ -1,0 +1,44 @@
+[gd_scene format=3 uid="uid://7o6oqd6peqhl"]
+
+[ext_resource type="Script" uid="uid://cxh35kyexnmwq" path="res://player/player.gd" id="1_oul6g"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_kqu6x"]
+radius = 0.35
+height = 1.8
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_oul6g"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(0.8627451, 0.8627451, 0.8627451, 0.27450982)
+
+[sub_resource type="BoxMesh" id="BoxMesh_oul6g"]
+material = SubResource("StandardMaterial3D_oul6g")
+size = Vector3(1.01, 1.01, 1.01)
+
+[node name="Player" type="CharacterBody3D" unique_id=780558422]
+script = ExtResource("1_oul6g")
+fly_speed = 25.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1676621390]
+shape = SubResource("CapsuleShape3D_kqu6x")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1394757391]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 0)
+
+[node name="Crosshair" type="Label" parent="." unique_id=1866103642]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = -11.5
+offset_right = 20.0
+offset_bottom = 11.5
+grow_horizontal = 2
+grow_vertical = 2
+text = "+"
+
+[node name="BlockHighlight" type="MeshInstance3D" parent="." unique_id=2140064409]
+top_level = true
+mesh = SubResource("BoxMesh_oul6g")

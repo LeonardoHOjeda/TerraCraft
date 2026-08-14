@@ -1,0 +1,7 @@
+[gd_resource type="StandardMaterial3D" format=3 uid="uid://dk6pr0xp3x3ps"]
+
+[ext_resource type="Texture2D" uid="uid://uhemud13dr3i" path="res://blocks/textures/Atlas.png" id="1_3b6p3"]
+
+[resource]
+albedo_texture = ExtResource("1_3b6p3")
+texture_filter = 0

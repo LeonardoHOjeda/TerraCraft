@@ -1,0 +1,8 @@
+[gd_scene format=3 uid="uid://d2pi5g6c3md0c"]
+
+[ext_resource type="Script" uid="uid://21u3y0qs5qrw" path="res://world/chunk.gd" id="1_jbmh0"]
+[ext_resource type="Material" uid="uid://dk6pr0xp3x3ps" path="res://blocks/materials/block_material.tres" id="1_uc5gi"]
+
+[node name="Chunk" type="MeshInstance3D" unique_id=1053099425 groups=["chunks"]]
+material_override = ExtResource("1_uc5gi")
+script = ExtResource("1_jbmh0")

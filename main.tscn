@@ -1,0 +1,47 @@
+[gd_scene format=3 uid="uid://ctbetoyn2x2m6"]
+
+[ext_resource type="PackedScene" uid="uid://7o6oqd6peqhl" path="res://player/player.tscn" id="2_0xm2m"]
+[ext_resource type="Script" uid="uid://ceiwl42aeeftp" path="res://hotbar.gd" id="3_h2yge"]
+[ext_resource type="Texture2D" uid="uid://uhemud13dr3i" path="res://blocks/textures/Atlas.png" id="4_1bvp3"]
+[ext_resource type="PackedScene" uid="uid://bx8g1e51p5xwl" path="res://world/world.tscn" id="4_lquwl"]
+[ext_resource type="Script" uid="uid://cxoxcscd60dt8" path="res://biome_debug.gd" id="5_lquwl"]
+
+[node name="Main" type="Node3D" unique_id=828085398]
+
+[node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
+seed = null
+terrain_frequency = null
+base_height = null
+terrain_height = null
+
+[node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=2126553105]
+transform = Transform3D(0.8660254, 0.35355338, -0.35355338, 0, 0.70710677, 0.70710677, 0.5, -0.6123724, 0.6123724, 0, 0, 0)
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=1670054348]
+
+[node name="Hotbar" type="HBoxContainer" parent="UI" unique_id=1096804252 groups=["hotbar"]]
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -20.0
+offset_top = -40.0
+offset_right = 20.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = 4
+script = ExtResource("3_h2yge")
+atlas = ExtResource("4_1bvp3")
+
+[node name="BiomeDebug" type="TextureRect" parent="UI" unique_id=1910060907 node_paths=PackedStringArray("world")]
+custom_minimum_size = Vector2(256, 256)
+offset_right = 40.0
+offset_bottom = 40.0
+expand_mode = 1
+stretch_mode = 5
+script = ExtResource("5_lquwl")
+world = NodePath("../../World")
