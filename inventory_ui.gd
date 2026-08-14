@@ -10,6 +10,8 @@ const ICON_SIZE := 32
 @onready var hotbar_grid: GridContainer = $VBoxContainer/HotbarGrid
 @onready var cursor_icon: TextureRect = $CursorItem
 @onready var cursor_label: Label = $CursorItem/Amount
+@onready var crafting_list: VBoxContainer = $VBoxContainer/CraftingScroll/CraftingList
+
 
 var slot_icons: Array[TextureRect] = []
 var amount_labels: Array[Label] = []
@@ -18,6 +20,8 @@ var cursor_item: int = ItemRegistry.Item.NONE
 var cursor_amount: int = 0
 
 var slot_buttons: Array[Button] = []
+
+var crafting_buttons: Array[Button] = []
 
 
 func _ready() -> void:
@@ -29,9 +33,12 @@ func _ready() -> void:
 	hotbar_grid.add_theme_constant_override("h_separation", 4)
 
 	create_slots()
+	create_crafting_buttons()
+	crafting_list.add_theme_constant_override("separation", 6)
 
 	if player:
 		player.inventory.slot_changed.connect(update_slot)
+		player.inventory.slot_changed.connect(_on_inventory_changed)
 
 	update_all_slots()
 
@@ -138,6 +145,7 @@ func update_slot(index: int) -> void:
 	if item_id == ItemRegistry.Item.NONE:
 		slot_icons[index].texture = null
 		amount_labels[index].text = ""
+		update_slot_tooltip(index)
 		return
 
 	var texture_position := ItemRegistry.get_texture_position(item_id)
@@ -438,3 +446,133 @@ func handle_double_click(index: int) -> void:
 		cursor_amount += to_take
 
 	update_cursor_visual()
+
+
+func create_crafting_buttons() -> void:
+	for child in crafting_list.get_children():
+		child.queue_free()
+
+	crafting_buttons.clear()
+
+	for recipe_index in CraftingRegistry.RECIPES.size():
+		var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
+
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(0, 70)
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+
+		button.gui_input.connect(
+			func(event: InputEvent) -> void:
+				if not event is InputEventMouseButton:
+					return
+
+				if not event.pressed:
+					return
+
+				if event.button_index != MOUSE_BUTTON_LEFT:
+					return
+
+				if event.shift_pressed:
+					craft_max(recipe_index)
+				else:
+					craft_recipe(recipe_index)
+		)
+
+		crafting_list.add_child(button)
+		crafting_buttons.append(button)
+
+	update_crafting_buttons()
+
+
+func update_crafting_buttons() -> void:
+	if player == null:
+		return
+
+	for i in CraftingRegistry.RECIPES.size():
+		var recipe: Dictionary = CraftingRegistry.RECIPES[i]
+		var output_item: int = recipe["output_item"]
+
+		crafting_buttons[i].text = get_recipe_text(recipe)
+
+		crafting_buttons[i].disabled = not CraftingRegistry.can_craft(
+			player.inventory,
+			recipe
+		)
+
+		crafting_buttons[i].icon = get_item_texture(output_item)
+		crafting_buttons[i].add_theme_constant_override("icon_max_width",32)
+		crafting_buttons[i].expand_icon = true
+
+
+func craft_recipe(recipe_index: int) -> void:
+	if player == null:
+		return
+
+	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
+
+	CraftingRegistry.craft(
+		player.inventory,
+		recipe
+	)
+
+	update_crafting_buttons()
+
+
+func _on_inventory_changed(_index: int) -> void:
+	update_crafting_buttons()
+
+func get_recipe_text(recipe: Dictionary) -> String:
+	var output_item: int = recipe["output_item"]
+	var output_amount: int = recipe["output_amount"]
+	var ingredients: Dictionary = recipe["ingredients"]
+
+	var text := (
+		ItemRegistry.get_item_name(output_item)
+		+ " ×"
+		+ str(output_amount)
+	)
+
+	for item_id in ingredients:
+		var required: int = ingredients[item_id]
+		var owned := player.inventory.get_total_amount(item_id)
+
+		text += (
+			"\n"
+			+ ItemRegistry.get_item_name(item_id)
+			+ " "
+			+ str(owned)
+			+ "/"
+			+ str(required)
+		)
+
+	return text
+
+
+func get_item_texture(item_id: int) -> Texture2D:
+	var texture_position := ItemRegistry.get_texture_position(item_id)
+
+	var atlas_texture := AtlasTexture.new()
+	atlas_texture.atlas = atlas
+	atlas_texture.region = Rect2(
+		texture_position.x * 16,
+		texture_position.y * 16,
+		16,
+		16
+	)
+
+	return atlas_texture
+
+
+func craft_max(recipe_index: int) -> void:
+	if player == null:
+		return
+
+	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
+
+	while CraftingRegistry.craft(
+		player.inventory,
+		recipe
+	):
+		pass
+
+	update_crafting_buttons()

@@ -226,3 +226,55 @@ func move_stack_to_range(source_index: int, target_start: int, target_end: int) 
 
 		if remaining <= 0:
 			return
+
+
+func get_total_amount(item_id: int) -> int:
+	var total := 0
+
+	for i in TOTAL_SLOT_COUNT:
+		if items[i] == item_id:
+			total += amounts[i]
+
+	return total
+
+
+func has_items(item_id: int, amount: int) -> bool:
+	return get_total_amount(item_id) >= amount
+
+
+func remove_items(item_id: int, amount: int) -> bool:
+	if not has_items(item_id, amount):
+		return false
+
+	var remaining := amount
+
+	for i in TOTAL_SLOT_COUNT:
+		if items[i] != item_id:
+			continue
+
+		var to_remove: int = min(amounts[i], remaining)
+
+		remove_item(i, to_remove)
+		remaining -= to_remove
+
+		if remaining <= 0:
+			return true
+
+	return false
+
+
+func can_add_item(item_id: int, amount: int) -> bool:
+	var available_space := 0
+	var max_stack := ItemRegistry.get_max_stack(item_id)
+
+	for i in TOTAL_SLOT_COUNT:
+		if items[i] == item_id:
+			available_space += max_stack - amounts[i]
+
+		elif items[i] == ItemRegistry.Item.NONE:
+			available_space += max_stack
+
+		if available_space >= amount:
+			return true
+
+	return false

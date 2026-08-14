@@ -25,6 +25,8 @@ enum Item {
 	GOLD_INGOT,
 	TUNGSTEN_INGOT,
 	PLATINUM_INGOT,
+	WOOD_PLANKS,
+	STICK,
 }
 
 
@@ -66,46 +68,44 @@ static func get_drop(block: int) -> int:
 		BlockRegistry.Block.PLATINUM:
 			return Item.RAW_PLATINUM
 
+		BlockRegistry.Block.WOOD_PLANKS:
+			return Item.WOOD_PLANKS
+
 	return Item.NONE
 
 static func get_texture_position(item: int) -> Vector2i:
 	match item:
 		Item.DIRT:
 			return BlockRegistry.TEXTURE_DIRT
-
 		Item.STONE:
 			return BlockRegistry.TEXTURE_STONE
-
 		Item.WOOD:
 			return BlockRegistry.TEXTURE_WOOD_SIDE
-
 		Item.SAND:
 			return BlockRegistry.TEXTURE_SAND
-
 		Item.COAL:
 			return BlockRegistry.TEXTURE_COAL
-
 		Item.RAW_IRON:
-			return BlockRegistry.TEXTURE_IRON
-
+			return BlockRegistry.TEXTURE_IRON_ORE
 		Item.RAW_COPPER:
 			return BlockRegistry.TEXTURE_COPPER
-
 		Item.RAW_TIN:
 			return BlockRegistry.TEXTURE_TIN
-
 		Item.RAW_GOLD:
 			return BlockRegistry.TEXTURE_GOLD
-
 		Item.RAW_TUNGSTEN:
 			return BlockRegistry.TEXTURE_TUNGSTEN
-
 		Item.RAW_PLATINUM:
 			return BlockRegistry.TEXTURE_PLATINUM
+		Item.WOOD_PLANKS:
+			return BlockRegistry.TEXTURE_WOOD_PLANK
+		Item.STICK:
+			return BlockRegistry.TEXTURE_STICK
 
 	return BlockRegistry.TEXTURE_DIRT
 
 static func get_placeable_block(item_id: int) -> int:
+	print("Item ID: " + str(item_id))
 	match item_id:
 		Item.DIRT:
 			return BlockRegistry.Block.DIRT
@@ -119,6 +119,9 @@ static func get_placeable_block(item_id: int) -> int:
 		Item.SAND:
 			return BlockRegistry.Block.SAND
 
+		Item.WOOD_PLANKS:
+			return BlockRegistry.Block.WOOD_PLANKS
+
 	return BlockRegistry.Block.AIR
 
 static func get_max_stack(item_id: int) -> int:
@@ -128,6 +131,7 @@ static func get_max_stack(item_id: int) -> int:
 
 	return 64
 
+# Obtener el nombre del objeto dado el ID del objeto
 static func get_item_name(item_id: int) -> String:
 	match item_id:
 		Item.DIRT:
@@ -164,5 +168,9 @@ static func get_item_name(item_id: int) -> String:
 			return "Lingote de tungsteno"
 		Item.PLATINUM_INGOT:
 			return "Lingote de platino"
+		Item.WOOD_PLANKS:
+			return "Tablones de madera"
+		Item.STICK:
+			return "Palo"
 
 	return ""

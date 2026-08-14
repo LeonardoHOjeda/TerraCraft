@@ -297,6 +297,9 @@ func get_block_texture(block: int, direction: Vector3i) -> Vector2i:
 		BlockRegistry.Block.PLATINUM:
 			return BlockRegistry.TEXTURE_PLATINUM
 
+		BlockRegistry.Block.WOOD_PLANKS:
+			return BlockRegistry.TEXTURE_WOOD_PLANK
+
 	return BlockRegistry.TEXTURE_DIRT
 
 

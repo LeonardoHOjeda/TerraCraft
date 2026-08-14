@@ -17,7 +17,10 @@ enum Block {
 	TIN,
 	GOLD,
 	TUNGSTEN,
-	PLATINUM,
+  PLATINUM,
+	WOOD_PLANKS,
+  STICK,
+  IRON_ORE
 }
 
 const ATLAS_SIZE := 16
@@ -40,3 +43,6 @@ const TEXTURE_GOLD := Vector2i(15, 0)
 
 const TEXTURE_TUNGSTEN := Vector2i(1, 1)
 const TEXTURE_PLATINUM := Vector2i(2, 1)
+const TEXTURE_WOOD_PLANK := Vector2i(3, 1)
+const TEXTURE_STICK := Vector2i(4, 1)
+const TEXTURE_IRON_ORE := Vector2i(5, 1)
