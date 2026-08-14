@@ -30,8 +30,7 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_F:
-		is_flying = !is_flying
-		velocity = Vector3.ZERO
+		set_flying(!is_flying)
 
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * mouse_sensitivity)
@@ -274,3 +273,10 @@ func get_chunk_from_hit(collider: Object) -> Chunk:
 		return collider.get_meta("chunk") as Chunk
 
 	return null
+
+
+func set_flying(enabled: bool) -> void:
+	is_flying = enabled
+	velocity = Vector3.ZERO
+
+	collision_shape.set_deferred("disabled", enabled)

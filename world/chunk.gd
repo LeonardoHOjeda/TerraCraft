@@ -5,12 +5,14 @@ const SIZE_XZ := 16
 const HEIGHT := 64
 const ATLAS_SIZE := 16.0
 
+var world: World
+
 var chunk_position := Vector2i.ZERO
 
 var continental_noise: FastNoiseLite
 var detail_noise: FastNoiseLite
 var biome_noise: FastNoiseLite
-var tree_noise: FastNoiseLite
+var cave_noise: FastNoiseLite
 
 var terrain_height: int = 8
 var base_height: int = 4
@@ -34,24 +36,25 @@ const DIRECTIONS := [
 
 
 func initialize(
+	new_world: World,
 	new_chunk_position: Vector2i,
 	new_continental_noise: FastNoiseLite,
 	new_detail_noise: FastNoiseLite,
 	new_biome_noise: FastNoiseLite,
-	new_tree_noise: FastNoiseLite,
+	new_cave_noise: FastNoiseLite,
 	new_terrain_height: int,
 	new_base_height: int
 ) -> void:
+	world = new_world
 	chunk_position = new_chunk_position
 	continental_noise = new_continental_noise
 	detail_noise = new_detail_noise
 	biome_noise = new_biome_noise
-	tree_noise = new_tree_noise
+	cave_noise = new_cave_noise
 	terrain_height = new_terrain_height
 	base_height = new_base_height
 
 	generate_blocks()
-	rebuild_mesh()
 
 
 func generate_blocks() -> void:
@@ -88,10 +91,25 @@ func generate_blocks() -> void:
 
 				surface_height = clampi(surface_height, 1, HEIGHT - 1)
 
+				var cave_value := cave_noise.get_noise_3d(
+					world_x,
+					y,
+					world_z
+				)
+
+				var is_cave := false
+
+				if y > 2 and y < surface_height - 4:
+					if cave_value > 0.38:
+						is_cave = true
+
 				if y == 0:
 					blocks[x][y][z] = BlockRegistry.Block.BEDROCK
 
 				elif y > surface_height:
+					blocks[x][y][z] = BlockRegistry.Block.AIR
+
+				elif is_cave:
 					blocks[x][y][z] = BlockRegistry.Block.AIR
 
 				elif y == surface_height:
@@ -137,7 +155,7 @@ func rebuild_mesh() -> void:
 				for direction in DIRECTIONS:
 					var neighbor_position = block_position + direction
 
-					if get_block(neighbor_position) == BlockRegistry.Block.AIR:
+					if get_neighbor_block(neighbor_position) == BlockRegistry.Block.AIR:
 						add_face(
 							block_position,
 							direction,
@@ -174,11 +192,7 @@ func rebuild_mesh() -> void:
 				child.set_meta("chunk", self)
 
 
-func add_face(
-	block_position: Vector3i,
-	direction: Vector3i,
-	block: int
-) -> void:
+func add_face(block_position: Vector3i, direction: Vector3i, block: int) -> void:
 	var face_vertices := get_face_vertices(direction)
 	var texture_position := get_block_texture(block, direction)
 	var face_uvs := get_atlas_uvs(texture_position)
@@ -202,10 +216,7 @@ func add_face(
 	indices.append(start_index + 2)
 
 
-func get_block_texture(
-	block: int,
-	direction: Vector3i
-) -> Vector2i:
+func get_block_texture(block: int, direction: Vector3i) -> Vector2i:
 	match block:
 		BlockRegistry.Block.GRASS:
 			if direction == Vector3i.UP:
@@ -243,12 +254,28 @@ func get_block_texture(
 		BlockRegistry.Block.COAL:
 			return BlockRegistry.TEXTURE_COAL
 
+		BlockRegistry.Block.IRON:
+			return BlockRegistry.TEXTURE_IRON
+
+		BlockRegistry.Block.COPPER:
+			return BlockRegistry.TEXTURE_COPPER
+
+		BlockRegistry.Block.TIN:
+			return BlockRegistry.TEXTURE_TIN
+
+		BlockRegistry.Block.GOLD:
+			return BlockRegistry.TEXTURE_GOLD
+
+		BlockRegistry.Block.TUNGSTEN:
+			return BlockRegistry.TEXTURE_TUNGSTEN
+
+		BlockRegistry.Block.PLATINUM:
+			return BlockRegistry.TEXTURE_PLATINUM
+
 	return BlockRegistry.TEXTURE_DIRT
 
 
-func get_atlas_uvs(
-	atlas_position: Vector2i
-) -> Array[Vector2]:
+func get_atlas_uvs(atlas_position: Vector2i) -> Array[Vector2]:
 	var tile_size := 1.0 / ATLAS_SIZE
 
 	var left := atlas_position.x * tile_size
@@ -339,69 +366,6 @@ func place_block(position: Vector3i, block: int) -> void:
 	rebuild_mesh()
 
 
-func generate_trees() -> void:
-	var tree_positions: Array[Vector2i] = []
-	var minimum_tree_distance := 4
-
-	for x in SIZE_XZ:
-		for z in SIZE_XZ:
-			var world_x := chunk_position.x * SIZE_XZ + x
-			var world_z := chunk_position.y * SIZE_XZ + z
-
-			var biome_value := biome_noise.get_noise_2d(
-				world_x,
-				world_z
-			)
-
-			var tree_threshold := 0.60
-
-			if biome_value > 0.35:
-				# Bosque
-				tree_threshold = 0.35
-			elif biome_value >= -0.25:
-				# Pradera
-				tree_threshold = 0.72
-			else:
-				# Desierto
-				continue
-
-			var tree_value := tree_noise.get_noise_2d(
-				world_x,
-				world_z
-			)
-
-			if tree_value < tree_threshold:
-				continue
-
-			var surface_y := get_surface_height(x, z)
-
-			if surface_y < 1:
-				continue
-
-			if surface_y + 6 >= HEIGHT:
-				continue
-
-			if x < 2 or x >= SIZE_XZ - 2:
-				continue
-
-			if z < 2 or z >= SIZE_XZ - 2:
-				continue
-
-			var candidate := Vector2i(x, z)
-
-			var too_close := false
-
-			for existing in tree_positions:
-				if candidate.distance_to(existing) < minimum_tree_distance:
-					too_close = true
-					break
-
-			if too_close:
-				continue
-
-			create_tree(Vector3i(x, surface_y + 1, z))
-			tree_positions.append(candidate)
-
 func get_surface_height(x: int, z: int) -> int:
 	for y in range(HEIGHT - 1, -1, -1):
 		var block: int = blocks[x][y][z]
@@ -414,48 +378,6 @@ func get_surface_height(x: int, z: int) -> int:
 
 	return -1
 
-func create_tree(position: Vector3i) -> void:
-	var trunk_height := 4
-
-	for y in trunk_height:
-		set_block_safe(
-			position + Vector3i(0, y, 0),
-			BlockRegistry.Block.WOOD
-		)
-
-	var leaves_center := position + Vector3i(0, trunk_height, 0)
-
-	for x in range(-2, 3):
-		for y in range(-2, 2):
-			for z in range(-2, 3):
-				if abs(x) + abs(z) > 3:
-					continue
-
-				set_block_safe(
-					leaves_center + Vector3i(x, y, z),
-					BlockRegistry.Block.LEAVES
-				)
-
-	set_block_safe(
-		leaves_center + Vector3i(0, 2, 0),
-		BlockRegistry.Block.LEAVES
-	)
-
-func set_block_safe(position: Vector3i, block: int) -> void:
-	if (
-		position.x < 0
-		or position.y < 0
-		or position.z < 0
-		or position.x >= SIZE_XZ
-		or position.y >= HEIGHT
-		or position.z >= SIZE_XZ
-	):
-		return
-
-	if blocks[position.x][position.y][position.z] != BlockRegistry.Block.AIR:
-		return
-
-	blocks[position.x][position.y][position.z] = block
 
 
 func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
@@ -477,3 +399,25 @@ func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
 
 func get_block_local(position: Vector3i) -> int:
 	return get_block(position)
+
+
+func get_neighbor_block(local_position: Vector3i) -> int:
+	if (
+		local_position.x >= 0
+		and local_position.x < SIZE_XZ
+		and local_position.y >= 0
+		and local_position.y < HEIGHT
+		and local_position.z >= 0
+		and local_position.z < SIZE_XZ
+	):
+		return get_block(local_position)
+
+	if world == null:
+		return BlockRegistry.Block.AIR
+
+	var world_position := (
+		Vector3i(global_position)
+		+ local_position
+	)
+
+	return world.get_block_at_world_position(world_position)

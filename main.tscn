@@ -5,14 +5,13 @@
 [ext_resource type="Texture2D" uid="uid://uhemud13dr3i" path="res://blocks/textures/Atlas.png" id="4_1bvp3"]
 [ext_resource type="PackedScene" uid="uid://bx8g1e51p5xwl" path="res://world/world.tscn" id="4_lquwl"]
 [ext_resource type="Script" uid="uid://cxoxcscd60dt8" path="res://biome_debug.gd" id="5_lquwl"]
+[ext_resource type="Script" uid="uid://bkhfw1rvpglw0" path="res://debug_panel.gd" id="6_7mycd"]
 
 [node name="Main" type="Node3D" unique_id=828085398]
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
-seed = null
-terrain_frequency = null
-base_height = null
-terrain_height = null
+world_size_x = 32
+world_size_z = 32
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
@@ -38,10 +37,21 @@ script = ExtResource("3_h2yge")
 atlas = ExtResource("4_1bvp3")
 
 [node name="BiomeDebug" type="TextureRect" parent="UI" unique_id=1910060907 node_paths=PackedStringArray("world")]
+visible = false
 custom_minimum_size = Vector2(256, 256)
 offset_right = 40.0
 offset_bottom = 40.0
 expand_mode = 1
 stretch_mode = 5
 script = ExtResource("5_lquwl")
+world = NodePath("../../World")
+
+[node name="DebugPanel" type="Label" parent="UI" unique_id=491280464 node_paths=PackedStringArray("player", "world")]
+visible = false
+offset_right = 40.0
+offset_bottom = 23.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
+script = ExtResource("6_7mycd")
+player = NodePath("../../Player")
 world = NodePath("../../World")
