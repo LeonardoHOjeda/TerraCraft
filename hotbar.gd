@@ -5,7 +5,13 @@ const ICON_SIZE := 32
 
 @export var atlas: Texture2D
 @export var player: Player
+@export var selected_item_label: Label
+@export var item_name_fade_duration: float = 1.0
 
+@export var item_name_duration: float = 2.0
+
+
+var item_name_timer: float = 0.0
 var selected_slot: int = 0
 
 var slots: Array[PanelContainer] = []
@@ -24,6 +30,20 @@ func _ready() -> void:
 	update_all_slots()
 	update_selection()
 
+func _process(delta: float) -> void:
+	if item_name_timer <= 0.0:
+		return
+
+	item_name_timer -= delta
+
+	if item_name_timer <= 0.0:
+		var alpha = clamp(item_name_timer / item_name_fade_duration, 0.0, 1.0)
+
+		selected_item_label.modulate.a = alpha * alpha
+
+	if item_name_timer <= 0.0:
+		selected_item_label.text = ""
+		selected_item_label.modulate.a = 1.0
 
 func create_slots() -> void:
 	for child in get_children():
@@ -72,6 +92,7 @@ func set_selected_slot(index: int) -> void:
 	)
 
 	update_selection()
+	show_selected_item_name()
 
 
 func get_selected_item() -> int:
@@ -203,9 +224,7 @@ func update_selection() -> void:
 		)
 
 
-func _on_inventory_slot_changed(
-	inventory_index: int
-) -> void:
+func _on_inventory_slot_changed(inventory_index: int) -> void:
 	if inventory_index < Inventory.HOTBAR_START:
 		return
 
@@ -218,3 +237,19 @@ func _on_inventory_slot_changed(
 		return
 
 	update_slot(hotbar_index)
+
+
+func show_selected_item_name() -> void:
+	if selected_item_label == null:
+		return
+
+	var item_id := get_selected_item()
+
+	if item_id == ItemRegistry.Item.NONE:
+		selected_item_label.text = ""
+		item_name_timer = 0.0
+		return
+
+	selected_item_label.text = ItemRegistry.get_item_name(item_id)
+	selected_item_label.modulate.a = 1.0
+	item_name_timer = item_name_duration

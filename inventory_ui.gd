@@ -81,6 +81,16 @@ func create_slot(index: int) -> PanelContainer:
 		update_slot_tooltip(index)
 	)
 
+	button.mouse_entered.connect(
+		func() -> void:
+			set_slot_hover(slot, true)
+	)
+
+	button.mouse_exited.connect(
+		func() -> void:
+			set_slot_hover(slot, false)
+	)
+
 	var icon := TextureRect.new()
 	icon.position = Vector2(8, 8)
 	icon.size = Vector2(ICON_SIZE, ICON_SIZE)
@@ -149,6 +159,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("inventory"):
 		toggle_inventory()
 
+	if event.is_action_pressed("ui_cancel") and visible:
+		toggle_inventory()
+		get_viewport().set_input_as_handled()
+
 
 func toggle_inventory() -> void:
 	visible = !visible
@@ -169,7 +183,12 @@ func _on_slot_gui_input(index: int, event: InputEvent) -> void:
 		return
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
-		handle_left_click(index)
+		if event.double_click:
+			handle_double_click(index)
+		elif event.shift_pressed:
+			handle_shift_click(index)
+		else:
+			handle_left_click(index)
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		handle_right_click(index)
@@ -331,3 +350,91 @@ func update_slot_tooltip(index: int) -> void:
 	slot_buttons[index].tooltip_text = (
 		item_name + "\nCantidad: " + str(amount)
 	)
+
+func set_slot_hover(slot: PanelContainer, hovered: bool) -> void:
+	var style := StyleBoxFlat.new()
+
+	style.bg_color = (
+		Color(0.20, 0.20, 0.20, 0.95)
+		if hovered
+		else Color(0.12, 0.12, 0.12, 0.9)
+	)
+
+	style.border_width_left = 2
+	style.border_width_top = 2
+	style.border_width_right = 2
+	style.border_width_bottom = 2
+
+	style.border_color = (
+		Color(0.75, 0.75, 0.75)
+		if hovered
+		else Color(0.4, 0.4, 0.4)
+	)
+
+	slot.add_theme_stylebox_override("panel", style)
+
+func handle_shift_click(index: int) -> void:
+	if player == null:
+		return
+
+	if cursor_item != ItemRegistry.Item.NONE:
+		return
+
+	var inventory := player.inventory
+
+	if inventory.get_item(index) == ItemRegistry.Item.NONE:
+		return
+
+	# Mochila → Hotbar
+	if index < Inventory.HOTBAR_START:
+		inventory.move_stack_to_range(
+			index,
+			Inventory.HOTBAR_START,
+			Inventory.TOTAL_SLOT_COUNT
+		)
+
+	# Hotbar → Mochila
+	else:
+		inventory.move_stack_to_range(
+			index,
+			0,
+			Inventory.HOTBAR_START
+		)
+
+
+func handle_double_click(index: int) -> void:
+	if player == null:
+		return
+
+	var inventory := player.inventory
+	var target_item := cursor_item
+
+	if target_item == ItemRegistry.Item.NONE:
+		target_item = inventory.get_item(index)
+
+		if target_item == ItemRegistry.Item.NONE:
+			return
+
+		cursor_item = target_item
+		cursor_amount = 0
+
+	var max_stack := ItemRegistry.get_max_stack(target_item)
+
+	for i in Inventory.TOTAL_SLOT_COUNT:
+		if cursor_amount >= max_stack:
+			break
+
+		if inventory.get_item(i) != target_item:
+			continue
+
+		var available := inventory.get_amount(i)
+		var needed := max_stack - cursor_amount
+		var to_take: int = min(available, needed)
+
+		if to_take <= 0:
+			continue
+
+		inventory.remove_item(i, to_take)
+		cursor_amount += to_take
+
+	update_cursor_visual()

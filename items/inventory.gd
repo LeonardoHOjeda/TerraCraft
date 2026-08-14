@@ -177,3 +177,52 @@ func add_to_slot(index: int, item_id: int, amount: int) -> int:
 	slot_changed.emit(index)
 
 	return amount - to_add
+
+func move_stack_to_range(source_index: int, target_start: int, target_end: int) -> void:
+	var item_id := get_item(source_index)
+	var remaining := get_amount(source_index)
+
+	if item_id == ItemRegistry.Item.NONE or remaining <= 0:
+		return
+
+	# Primero completar stacks existentes.
+	for i in range(target_start, target_end):
+		if items[i] != item_id:
+			continue
+
+		var previous_remaining := remaining
+
+		remaining = add_to_slot(
+			i,
+			item_id,
+			remaining
+		)
+
+		var moved := previous_remaining - remaining
+
+		if moved > 0:
+			remove_item(source_index, moved)
+
+		if remaining <= 0:
+			return
+
+	# Después buscar slots vacíos.
+	for i in range(target_start, target_end):
+		if items[i] != ItemRegistry.Item.NONE:
+			continue
+
+		var previous_remaining := remaining
+
+		remaining = add_to_slot(
+			i,
+			item_id,
+			remaining
+		)
+
+		var moved := previous_remaining - remaining
+
+		if moved > 0:
+			remove_item(source_index, moved)
+
+		if remaining <= 0:
+			return

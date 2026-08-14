@@ -8,6 +8,12 @@ extends CharacterBody3D
 @export var atlas: Texture2D
 @export var bob_height: float = 0.08
 @export var bob_speed: float = 2.5
+@export var pickup_delay: float = 0.5
+@export var merge_radius: float = 1.25
+@export var merge_interval: float = 0.4
+@export var lifetime: float = 300.0
+@export var spawn_horizontal_speed: float = 1.5
+@export var spawn_vertical_speed: float = 2.5
 
 @onready var mesh_instance: MeshInstance3D = $MeshInstance3D
 @onready var pickup_area: Area3D = $PickupArea
@@ -15,19 +21,47 @@ extends CharacterBody3D
 var base_mesh_y: float = 0.0
 var bob_time: float = 0.0
 
+var pickup_enabled: bool = false
+var pickup_timer: float = 0.0
+
+var merge_timer: float = 0.0
+var lifetime_timer: float = 0.0
+
 func _ready() -> void:
 	setup_texture()
 	base_mesh_y = mesh_instance.position.y
 	pickup_area.body_entered.connect(_on_body_entered)
+	add_to_group("dropped_items")
+	apply_spawn_impulse()
 
 
 func _physics_process(delta: float) -> void:
+	lifetime_timer += delta
+
+	if lifetime_timer >= lifetime:
+		queue_free()
+		return
+	if not pickup_enabled:
+		pickup_timer += delta
+
+		if pickup_timer >= pickup_delay:
+			pickup_enabled = true
+			try_pickup_existing_body()
+
+	merge_timer += delta
+
+	if merge_timer >= merge_interval:
+		merge_timer = 0.0
+		try_merge_nearby()
+
 	mesh_instance.rotation.y += rotation_speed * delta
 
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 	else:
 		velocity.y = 0.0
+		velocity.x = move_toward(velocity.x, 0.0, 6.0 * delta)
+		velocity.z = move_toward(velocity.z, 0.0, 6.0 * delta)
 
 	bob_time += delta
 
@@ -40,9 +74,16 @@ func _physics_process(delta: float) -> void:
 
 
 func _on_body_entered(body: Node3D) -> void:
+	if not pickup_enabled:
+		return
+		
 	if body is Player:
-		body.collect_item(item_id, amount)
-		queue_free()
+		var remaining: int = body.collect_item(item_id, amount)
+
+		if remaining <= 0:
+			queue_free()
+		else:
+			amount = remaining
 
 
 func setup_texture() -> void:
@@ -187,3 +228,64 @@ func add_face(
 		start + 2,
 		start + 3
 	])
+
+func try_pickup_existing_body() -> void:
+	for body in pickup_area.get_overlapping_bodies():
+		if body is Player:
+			var remaining = body.collect_item(item_id, amount)
+
+			if remaining <= 0:
+				queue_free()
+			else:
+				amount = remaining
+
+			return
+
+func try_merge_nearby() -> void:
+	if amount >= ItemRegistry.get_max_stack(item_id):
+		return
+
+	for node in get_tree().get_nodes_in_group("dropped_items"):
+		if node == self:
+			continue
+
+		if not node is DroppedItem:
+			continue
+
+		var other := node as DroppedItem
+
+		if other.item_id != item_id:
+			continue
+
+		if other.get_instance_id() < get_instance_id():
+			continue
+
+		if global_position.distance_squared_to(other.global_position) > merge_radius * merge_radius:
+			continue
+
+		var max_stack := ItemRegistry.get_max_stack(item_id)
+		var space := max_stack - amount
+
+		if space <= 0:
+			return
+
+		var transferred: int = min(space, other.amount)
+
+		amount += transferred
+		other.amount -= transferred
+
+		lifetime_timer = min(lifetime_timer, other.lifetime_timer)
+
+		if other.amount <= 0:
+			other.queue_free()
+			continue
+
+		if amount >= max_stack:
+			return
+
+func apply_spawn_impulse() -> void:
+	var angle := randf() * TAU
+
+	velocity.x = cos(angle) * spawn_horizontal_speed
+	velocity.z = sin(angle) * spawn_horizontal_speed
+	velocity.y = spawn_vertical_speed

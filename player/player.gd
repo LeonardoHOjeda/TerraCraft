@@ -72,7 +72,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_9:
 				select_slot(8)
 
-	if event.is_action_pressed("ui_cancel"):
+	if event.is_action_pressed("ui_cancel") and not inventory_open:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
@@ -177,10 +177,9 @@ func break_block() -> void:
 	if dropped_item == ItemRegistry.Item.NONE:
 		return
 
-	world.spawn_item(
-		dropped_item,
-		Vector3(world_block_position) + Vector3(0.5, 0.5, 0.5)
-	)
+	var drop_offset := Vector3(randf_range(-0.18, 0.18), 0.5, randf_range(-0.18, 0.18))
+
+	world.spawn_item(dropped_item, Vector3(world_block_position) + Vector3(0.5, 0.0, 0.5) + drop_offset)
 
 func place_block() -> void:
 	var from := camera.global_position
@@ -313,8 +312,5 @@ func set_flying(enabled: bool) -> void:
 
 	collision_shape.set_deferred("disabled", enabled)
 
-func collect_item(item_id: int, amount: int) -> void:
-	var remaining := inventory.add_item(item_id, amount)
-
-	if remaining > 0:
-		print("Inventario lleno. Quedaron ", remaining, " items.")
+func collect_item(item_id: int, amount: int) -> int:
+	return inventory.add_item(item_id, amount)

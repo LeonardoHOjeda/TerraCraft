@@ -12,6 +12,8 @@
 [node name="Main" type="Node3D" unique_id=828085398]
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
+world_size_x = 10
+world_size_z = 10
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
@@ -27,7 +29,7 @@ transform = Transform3D(0.8660254, 0.35355338, -0.35355338, 0, 0.70710677, 0.707
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=1670054348]
 
-[node name="Hotbar" type="HBoxContainer" parent="UI" unique_id=1096804252 node_paths=PackedStringArray("player") groups=["hotbar"]]
+[node name="Hotbar" type="HBoxContainer" parent="UI" unique_id=1096804252 node_paths=PackedStringArray("player", "selected_item_label") groups=["hotbar"]]
 anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
@@ -42,6 +44,7 @@ theme_override_constants/separation = 4
 script = ExtResource("3_h2yge")
 atlas = ExtResource("4_1bvp3")
 player = NodePath("../../Player")
+selected_item_label = NodePath("../SelectedItemName")
 
 [node name="BiomeDebug" type="TextureRect" parent="UI" unique_id=1910060907 node_paths=PackedStringArray("world")]
 visible = false
@@ -62,6 +65,16 @@ theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
 script = ExtResource("6_7mycd")
 player = NodePath("../../Player")
 world = NodePath("../../World")
+
+[node name="SelectedItemName" type="Label" parent="UI" unique_id=1886441843]
+offset_left = 553.0
+offset_top = 566.0
+offset_right = 593.0
+offset_bottom = 589.0
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 0.9019608)
+theme_override_constants/shadow_offset_x = 2
+theme_override_constants/shadow_offset_y = 2
+horizontal_alignment = 1
 
 [node name="InventoryPanel" type="PanelContainer" parent="UI" unique_id=1916807331 node_paths=PackedStringArray("player")]
 custom_minimum_size = Vector2(500, 260)
