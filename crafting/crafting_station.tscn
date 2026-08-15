@@ -1,0 +1,12 @@
+[gd_scene format=3 uid="uid://dhvdwn6bvak44"]
+
+[ext_resource type="Script" uid="uid://b7ras7212ks8l" path="res://crafting/crafting_station.gd" id="1_08u8c"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_ylb4c"]
+size = Vector3(5, 3, 5)
+
+[node name="CraftingStation" type="Area3D" unique_id=554172966]
+script = ExtResource("1_08u8c")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=472951634]
+shape = SubResource("BoxShape3D_ylb4c")

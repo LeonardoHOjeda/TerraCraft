@@ -299,6 +299,12 @@ func get_block_texture(block: int, direction: Vector3i) -> Vector2i:
 
 		BlockRegistry.Block.WOOD_PLANKS:
 			return BlockRegistry.TEXTURE_WOOD_PLANK
+			
+		BlockRegistry.Block.WORKBENCH:
+			return BlockRegistry.TEXTURE_WORKBENCH
+
+		BlockRegistry.Block.FURNACE:
+			return BlockRegistry.TEXTURE_FURNACE
 
 	return BlockRegistry.TEXTURE_DIRT
 

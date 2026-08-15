@@ -6,11 +6,12 @@ const ICON_SIZE := 32
 @export var atlas: Texture2D
 @export var player: Player
 
-@onready var inventory_grid: GridContainer = $VBoxContainer/InventoryGrid
-@onready var hotbar_grid: GridContainer = $VBoxContainer/HotbarGrid
+@onready var inventory_grid: GridContainer = $HBoxContainer/InventorySection/InventoryGrid
+@onready var hotbar_grid: GridContainer = $HBoxContainer/InventorySection/HotbarGrid
+@onready var crafting_grid: GridContainer = $HBoxContainer/CraftingSection/CraftingScroll/CraftingGrid
+
 @onready var cursor_icon: TextureRect = $CursorItem
 @onready var cursor_label: Label = $CursorItem/Amount
-@onready var crafting_list: VBoxContainer = $VBoxContainer/CraftingScroll/CraftingList
 
 
 var slot_icons: Array[TextureRect] = []
@@ -34,11 +35,13 @@ func _ready() -> void:
 
 	create_slots()
 	create_crafting_buttons()
-	crafting_list.add_theme_constant_override("separation", 6)
+	crafting_grid.add_theme_constant_override("h_separation", 4)
+	crafting_grid.add_theme_constant_override("v_separation", 4)
 
 	if player:
 		player.inventory.slot_changed.connect(update_slot)
 		player.inventory.slot_changed.connect(_on_inventory_changed)
+		player.crafting_stations_changed.connect(update_crafting_buttons)
 
 	update_all_slots()
 
@@ -449,17 +452,20 @@ func handle_double_click(index: int) -> void:
 
 
 func create_crafting_buttons() -> void:
-	for child in crafting_list.get_children():
+	for child in crafting_grid.get_children():
 		child.queue_free()
 
 	crafting_buttons.clear()
 
 	for recipe_index in CraftingRegistry.RECIPES.size():
 		var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
+		var output_item: int = recipe["output_item"]
 
 		var button := Button.new()
-		button.custom_minimum_size = Vector2(0, 70)
-		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.custom_minimum_size = Vector2(48, 48)
+		button.icon = get_item_texture(output_item)
+		button.expand_icon = true
+		button.add_theme_constant_override("icon_max_width", 32)
 
 		button.gui_input.connect(
 			func(event: InputEvent) -> void:
@@ -478,7 +484,12 @@ func create_crafting_buttons() -> void:
 					craft_recipe(recipe_index)
 		)
 
-		crafting_list.add_child(button)
+		button.mouse_entered.connect(
+			func() -> void:
+				update_crafting_tooltip(recipe_index)
+		)
+
+		crafting_grid.add_child(button)
 		crafting_buttons.append(button)
 
 	update_crafting_buttons()
@@ -490,18 +501,19 @@ func update_crafting_buttons() -> void:
 
 	for i in CraftingRegistry.RECIPES.size():
 		var recipe: Dictionary = CraftingRegistry.RECIPES[i]
-		var output_item: int = recipe["output_item"]
 
-		crafting_buttons[i].text = get_recipe_text(recipe)
-
-		crafting_buttons[i].disabled = not CraftingRegistry.can_craft(
-			player.inventory,
+		var can_craft := CraftingRegistry.can_craft(
+			player,
 			recipe
 		)
 
-		crafting_buttons[i].icon = get_item_texture(output_item)
-		crafting_buttons[i].add_theme_constant_override("icon_max_width",32)
-		crafting_buttons[i].expand_icon = true
+		crafting_buttons[i].disabled = not can_craft
+
+		crafting_buttons[i].modulate = (
+			Color.WHITE
+			if can_craft
+			else Color(1, 1, 1, 0.35)
+		)
 
 
 func craft_recipe(recipe_index: int) -> void:
@@ -510,42 +522,13 @@ func craft_recipe(recipe_index: int) -> void:
 
 	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
 
-	CraftingRegistry.craft(
-		player.inventory,
-		recipe
-	)
+	CraftingRegistry.craft(player,recipe)
 
 	update_crafting_buttons()
 
 
 func _on_inventory_changed(_index: int) -> void:
 	update_crafting_buttons()
-
-func get_recipe_text(recipe: Dictionary) -> String:
-	var output_item: int = recipe["output_item"]
-	var output_amount: int = recipe["output_amount"]
-	var ingredients: Dictionary = recipe["ingredients"]
-
-	var text := (
-		ItemRegistry.get_item_name(output_item)
-		+ " ×"
-		+ str(output_amount)
-	)
-
-	for item_id in ingredients:
-		var required: int = ingredients[item_id]
-		var owned := player.inventory.get_total_amount(item_id)
-
-		text += (
-			"\n"
-			+ ItemRegistry.get_item_name(item_id)
-			+ " "
-			+ str(owned)
-			+ "/"
-			+ str(required)
-		)
-
-	return text
 
 
 func get_item_texture(item_id: int) -> Texture2D:
@@ -569,10 +552,38 @@ func craft_max(recipe_index: int) -> void:
 
 	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
 
-	while CraftingRegistry.craft(
-		player.inventory,
-		recipe
-	):
+	while CraftingRegistry.craft(player,recipe):
 		pass
 
 	update_crafting_buttons()
+
+
+func update_crafting_tooltip(recipe_index: int) -> void:
+	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
+
+	var output_item: int = recipe["output_item"]
+	var output_amount: int = recipe["output_amount"]
+	var ingredients: Dictionary = recipe["ingredients"]
+
+	var text := (
+		ItemRegistry.get_item_name(output_item)
+		+ " ×"
+		+ str(output_amount)
+	)
+
+	text += "\n\nRequiere:"
+
+	for item_id in ingredients:
+		var required: int = ingredients[item_id]
+		var owned: int = player.inventory.get_total_amount(item_id)
+
+		text += (
+			"\n"
+			+ ItemRegistry.get_item_name(item_id)
+			+ " "
+			+ str(owned)
+			+ "/"
+			+ str(required)
+		)
+
+	crafting_buttons[recipe_index].tooltip_text = text

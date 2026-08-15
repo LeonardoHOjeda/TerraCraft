@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" uid="uid://cxh35kyexnmwq" path="res://player/player.gd" id="1_oul6g"]
 [ext_resource type="PackedScene" uid="uid://dj8ymiri8tfg0" path="res://items/inventory.tscn" id="2_g1dw6"]
+[ext_resource type="Texture2D" uid="uid://b60jcilxq2qg" path="res://blocks/textures/breaking.png" id="2_yw30f"]
 [ext_resource type="Script" uid="uid://2556m5f468l0" path="res://items/inventory.gd" id="3_yw30f"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_kqu6x"]
@@ -11,7 +12,7 @@ height = 1.8
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_oul6g"]
 transparency = 1
 shading_mode = 0
-albedo_color = Color(0.8627451, 0.8627451, 0.8627451, 0.27450982)
+albedo_color = Color(0.8627451, 0.8627451, 0.8627451, 0.11764706)
 
 [sub_resource type="BoxMesh" id="BoxMesh_oul6g"]
 material = SubResource("StandardMaterial3D_oul6g")
@@ -20,13 +21,8 @@ size = Vector3(1.01, 1.01, 1.01)
 [node name="Player" type="CharacterBody3D" unique_id=780558422]
 collision_layer = 2
 script = ExtResource("1_oul6g")
-speed = null
-jump_velocity = null
-mouse_sensitivity = null
-interaction_distance = null
-break_cooldown = null
-place_cooldown = null
 fly_speed = 25.0
+cracks_texture = ExtResource("2_yw30f")
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1394757391]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.65, 0)
@@ -54,3 +50,7 @@ text = "+"
 
 [node name="Inventory" parent="." unique_id=1096089921 instance=ExtResource("2_g1dw6")]
 script = ExtResource("3_yw30f")
+
+[node name="MiningCracks" type="MeshInstance3D" parent="." unique_id=347987680]
+top_level = true
+cast_shadow = 0

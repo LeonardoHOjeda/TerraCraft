@@ -1,6 +1,13 @@
 class_name ItemRegistry
 extends Node
 
+enum ToolType {
+	NONE,
+	PICKAXE,
+	AXE,
+	SHOVEL,
+}
+
 enum Item {
 	NONE,
 
@@ -27,6 +34,13 @@ enum Item {
 	PLATINUM_INGOT,
 	WOOD_PLANKS,
 	STICK,
+
+	WORKBENCH,
+	FURNACE,
+
+	WOODEN_PICKAXE,
+	STONE_PICKAXE,
+	IRON_PICKAXE
 }
 
 
@@ -71,8 +85,15 @@ static func get_drop(block: int) -> int:
 		BlockRegistry.Block.WOOD_PLANKS:
 			return Item.WOOD_PLANKS
 
+		BlockRegistry.Block.WORKBENCH:
+			return Item.WORKBENCH
+
+		BlockRegistry.Block.FURNACE:
+			return Item.FURNACE
+
 	return Item.NONE
 
+# Funcion para obtener la textura de lo que sueltan los bloques minados
 static func get_texture_position(item: int) -> Vector2i:
 	match item:
 		Item.DIRT:
@@ -101,6 +122,16 @@ static func get_texture_position(item: int) -> Vector2i:
 			return BlockRegistry.TEXTURE_WOOD_PLANK
 		Item.STICK:
 			return BlockRegistry.TEXTURE_STICK
+		Item.WORKBENCH:
+			return BlockRegistry.TEXTURE_WORKBENCH
+		Item.FURNACE:
+			return BlockRegistry.TEXTURE_FURNACE
+		Item.WOODEN_PICKAXE:
+			return Vector2i(9,1)
+		Item.STONE_PICKAXE:
+			return Vector2i(10,1)
+		Item.IRON_INGOT:
+			return BlockRegistry.TEXTURE_IRON_INGOT
 
 	return BlockRegistry.TEXTURE_DIRT
 
@@ -122,12 +153,24 @@ static func get_placeable_block(item_id: int) -> int:
 		Item.WOOD_PLANKS:
 			return BlockRegistry.Block.WOOD_PLANKS
 
+		Item.WORKBENCH:
+			return BlockRegistry.Block.WORKBENCH
+
+		Item.FURNACE:
+			return BlockRegistry.Block.FURNACE
+
 	return BlockRegistry.Block.AIR
 
 static func get_max_stack(item_id: int) -> int:
 	match item_id:
 		Item.NONE:
 			return 0
+		Item.WOODEN_PICKAXE:
+			return 1
+		Item.STONE_PICKAXE:
+			return 1
+		Item.IRON_PICKAXE:
+			return 1
 
 	return 64
 
@@ -172,5 +215,50 @@ static func get_item_name(item_id: int) -> String:
 			return "Tablones de madera"
 		Item.STICK:
 			return "Palo"
+		Item.WORKBENCH:
+			return "Mesa de trabajo"
+		Item.FURNACE:
+			return "Horno"
+		Item.WOODEN_PICKAXE:
+			return "Pico de madera"
+		Item.STONE_PICKAXE:
+			return "Pico de piedra"
+		Item.IRON_PICKAXE:
+			return "Pico de hierro"
 
 	return ""
+
+static func get_tool_type(item_id: int) -> ToolType:
+	match item_id:
+		Item.WOODEN_PICKAXE:
+			return ToolType.PICKAXE
+		Item.STONE_PICKAXE:
+			return ToolType.PICKAXE
+		Item.IRON_PICKAXE:
+			return ToolType.PICKAXE
+
+	return ToolType.NONE
+
+
+static func get_mining_speed(item_id: int) -> float:
+	match item_id:
+		Item.WOODEN_PICKAXE:
+			return 2.5
+		Item.STONE_PICKAXE:
+			return 4.0
+		Item.IRON_PICKAXE:
+			return 6.0
+
+	return 1.0
+
+
+static func get_mining_tier(item_id: int) -> int:
+	match item_id:
+		Item.WOODEN_PICKAXE:
+			return 1
+		Item.STONE_PICKAXE:
+			return 2
+		Item.IRON_PICKAXE:
+			return 3
+
+	return 0

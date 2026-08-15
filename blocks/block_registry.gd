@@ -20,7 +20,9 @@ enum Block {
   PLATINUM,
 	WOOD_PLANKS,
   STICK,
-  IRON_ORE
+  IRON_ORE,
+  WORKBENCH,
+  FURNACE
 }
 
 const ATLAS_SIZE := 16
@@ -46,3 +48,111 @@ const TEXTURE_PLATINUM := Vector2i(2, 1)
 const TEXTURE_WOOD_PLANK := Vector2i(3, 1)
 const TEXTURE_STICK := Vector2i(4, 1)
 const TEXTURE_IRON_ORE := Vector2i(5, 1)
+const TEXTURE_WORKBENCH := Vector2i(6, 1)
+const TEXTURE_FURNACE := Vector2i(8, 1)
+const TEXTURE_IRON_INGOT := Vector2i(12, 1)
+
+
+static func get_preferred_tool(block: int) -> ItemRegistry.ToolType:
+	match block:
+		Block.STONE:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.COAL:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.IRON:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.COPPER:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.TIN:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.GOLD:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.TUNGSTEN:
+			return ItemRegistry.ToolType.PICKAXE
+
+		Block.PLATINUM:
+			return ItemRegistry.ToolType.PICKAXE
+
+	return ItemRegistry.ToolType.NONE
+
+
+static func get_hardness(block: int) -> float:
+	match block:
+		Block.DIRT:
+			return 0.35
+
+		Block.GRASS:
+			return 0.4
+
+		Block.SAND:
+			return 0.3
+
+		Block.WOOD:
+			return 0.9
+
+		Block.LEAVES:
+			return 0.15
+
+		Block.STONE:
+			return 1.5
+
+		Block.COAL:
+			return 1.8
+
+		Block.COPPER:
+			return 2.0
+
+		Block.TIN:
+			return 2.0
+
+		Block.IRON:
+			return 2.5
+
+		Block.GOLD:
+			return 2.5
+
+		Block.TUNGSTEN:
+			return 4.0
+
+		Block.PLATINUM:
+			return 4.5
+
+		Block.BEDROCK:
+			return INF
+
+	return 1.0
+
+
+static func get_required_mining_tier(block: int) -> int:
+	match block:
+		Block.STONE:
+			return 1
+
+		Block.COAL:
+			return 1
+
+		Block.COPPER:
+			return 1
+
+		Block.TIN:
+			return 1
+
+		Block.IRON:
+			return 2
+
+		Block.GOLD:
+			return 2
+
+		Block.TUNGSTEN:
+			return 3
+
+		Block.PLATINUM:
+			return 4
+
+	return 0

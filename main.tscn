@@ -17,12 +17,6 @@ world_size_z = 10
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
-speed = 5.0
-jump_velocity = 7.0
-mouse_sensitivity = 0.002
-interaction_distance = 6.0
-break_cooldown = 0.22
-place_cooldown = 0.12
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=2126553105]
 transform = Transform3D(0.8660254, 0.35355338, -0.35355338, 0, 0.70710677, 0.70710677, 0.5, -0.6123724, 0.6123724, 0, 0, 0)
@@ -93,31 +87,37 @@ script = ExtResource("7_272bh")
 atlas = ExtResource("8_5vw27")
 player = NodePath("../../Player")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="UI/InventoryPanel" unique_id=1560835148]
+[node name="HBoxContainer" type="HBoxContainer" parent="UI/InventoryPanel" unique_id=850753622]
 layout_mode = 2
 
-[node name="InventoryGrid" type="GridContainer" parent="UI/InventoryPanel/VBoxContainer" unique_id=143800528]
+[node name="CraftingSection" type="VBoxContainer" parent="UI/InventoryPanel/HBoxContainer" unique_id=1712544471]
+layout_mode = 2
+
+[node name="CraftingTitle" type="Label" parent="UI/InventoryPanel/HBoxContainer/CraftingSection" unique_id=233438207]
+layout_mode = 2
+
+[node name="CraftingScroll" type="ScrollContainer" parent="UI/InventoryPanel/HBoxContainer/CraftingSection" unique_id=2137491342]
+custom_minimum_size = Vector2(170, 220)
+layout_mode = 2
+
+[node name="CraftingGrid" type="GridContainer" parent="UI/InventoryPanel/HBoxContainer/CraftingSection/CraftingScroll" unique_id=1132393090]
+layout_mode = 2
+columns = 3
+
+[node name="InventorySection" type="VBoxContainer" parent="UI/InventoryPanel/HBoxContainer" unique_id=1590614973]
+layout_mode = 2
+
+[node name="InventoryGrid" type="GridContainer" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=143800528]
 custom_minimum_size = Vector2(464, 152)
 layout_mode = 2
 columns = 9
 
-[node name="HotbarGrid" type="GridContainer" parent="UI/InventoryPanel/VBoxContainer" unique_id=314725763]
+[node name="HSeparator" type="HSeparator" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=1230215011]
+layout_mode = 2
+
+[node name="HotbarGrid" type="GridContainer" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=314725763]
 layout_mode = 2
 columns = 9
-
-[node name="HSeparator" type="HSeparator" parent="UI/InventoryPanel/VBoxContainer" unique_id=1230215011]
-layout_mode = 2
-
-[node name="CraftingTitle" type="Label" parent="UI/InventoryPanel/VBoxContainer" unique_id=1756908716]
-layout_mode = 2
-text = "Crafting"
-
-[node name="CraftingScroll" type="ScrollContainer" parent="UI/InventoryPanel/VBoxContainer" unique_id=1120988987]
-custom_minimum_size = Vector2(0, 120)
-layout_mode = 2
-
-[node name="CraftingList" type="VBoxContainer" parent="UI/InventoryPanel/VBoxContainer/CraftingScroll" unique_id=1693440205]
-layout_mode = 2
 
 [node name="CursorItem" type="TextureRect" parent="UI/InventoryPanel" unique_id=1854744409]
 layout_mode = 2

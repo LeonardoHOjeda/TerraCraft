@@ -1,13 +1,17 @@
 class_name Player
 extends CharacterBody3D
 
+signal crafting_stations_changed
+
 @export var speed: float = 5.0
 @export var jump_velocity: float = 7.0
 @export var mouse_sensitivity: float = 0.002
 @export var interaction_distance: float = 6.0
-@export var break_cooldown: float = 0.22
 @export var place_cooldown: float = 0.12
 @export var fly_speed: float = 12.0
+@export var crafting_station_radius: int = 3
+@export var station_check_interval: float = 0.25
+@export var cracks_texture: Texture2D
 
 @onready var camera: Camera3D = $Camera3D
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
@@ -15,9 +19,9 @@ extends CharacterBody3D
 @onready var block_highlight: MeshInstance3D = $BlockHighlight
 @onready var world: World = get_tree().get_first_node_in_group("world")
 @onready var inventory: Inventory = $Inventory
+@onready var mining_cracks: MeshInstance3D = $MiningCracks
 
 var gravity: float = 20.0
-var break_timer: float = 0.0
 var place_timer: float = 0.0
 
 var selected_slot: int = 0
@@ -25,9 +29,19 @@ var selected_slot: int = 0
 var is_flying: bool = false
 var inventory_open: bool = false
 
+var nearby_workbench: bool = false
+var nearby_furnace: bool = false
+var station_check_timer: float = 0.0
+
+var mining_progress: float = 0.0
+var mining_block_position: Vector3i
+var is_mining: bool = false
+
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	block_highlight.visible = false
+	mining_cracks.visible = false
+	build_mining_cracks_mesh()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -77,16 +91,22 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	break_timer = max(break_timer - delta, 0.0)
 	place_timer = max(place_timer - delta, 0.0)
 
-	if (not inventory_open and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and break_timer <= 0.0):
-		break_block()
-		break_timer = break_cooldown
+	if (not inventory_open and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)):
+		process_mining(delta)
+	else:
+		reset_mining()
 
 	if (not inventory_open and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and place_timer <= 0.0):
 		place_block()
 		place_timer = place_cooldown
+
+	station_check_timer += delta
+
+	if station_check_timer >= station_check_interval:
+		station_check_timer = 0.0
+		update_nearby_crafting_stations()
 
 	if is_flying:
 		var input_direction := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
@@ -134,52 +154,6 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	update_block_highlight()
-
-func break_block() -> void:
-	var from := camera.global_position
-	var to := from + -camera.global_transform.basis.z * interaction_distance
-
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	query.collision_mask = 1
-
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
-
-	if result.is_empty():
-		return
-
-	var hit_position: Vector3 = result.position
-	var hit_normal: Vector3 = result.normal
-
-	var world_block_position := Vector3i(
-	floor(hit_position.x - hit_normal.x * 0.01),
-	floor(hit_position.y - hit_normal.y * 0.01),
-	floor(hit_position.z - hit_normal.z * 0.01)
-)
-
-	var chunk := get_chunk_from_hit(result.collider)
-
-	if chunk == null:
-		return
-
-	var local_block_position := world_block_position - Vector3i(chunk.global_position)
-
-	var broken_block := chunk.remove_block(local_block_position)
-
-	if broken_block == BlockRegistry.Block.AIR:
-		return
-
-	world.rebuild_chunk_and_neighbors(chunk, local_block_position)
-
-	var dropped_item := ItemRegistry.get_drop(broken_block)
-
-	if dropped_item == ItemRegistry.Item.NONE:
-		return
-
-	var drop_offset := Vector3(randf_range(-0.18, 0.18), 0.5, randf_range(-0.18, 0.18))
-
-	world.spawn_item(dropped_item, Vector3(world_block_position) + Vector3(0.5, 0.0, 0.5) + drop_offset)
 
 func place_block() -> void:
 	var from := camera.global_position
@@ -314,3 +288,416 @@ func set_flying(enabled: bool) -> void:
 
 func collect_item(item_id: int, amount: int) -> int:
 	return inventory.add_item(item_id, amount)
+
+
+
+func has_nearby_station(station: int) -> bool:
+	match station:
+		CraftingRegistry.Station.NONE:
+			return true
+
+		CraftingRegistry.Station.WORKBENCH:
+			return nearby_workbench
+
+		CraftingRegistry.Station.FURNACE:
+			return nearby_furnace
+
+	return false
+
+
+func update_nearby_crafting_stations() -> void:
+	if world == null:
+		return
+
+	var found_workbench := false
+	var found_furnace := false
+
+	var player_block := Vector3i(
+		floor(global_position.x),
+		floor(global_position.y),
+		floor(global_position.z)
+	)
+
+	for x in range(
+		-crafting_station_radius,
+		crafting_station_radius + 1
+	):
+		for y in range(
+			-crafting_station_radius,
+			crafting_station_radius + 1
+		):
+			for z in range(
+				-crafting_station_radius,
+				crafting_station_radius + 1
+			):
+				var block_position := (
+					player_block
+					+ Vector3i(x, y, z)
+				)
+
+				var block := world.get_block_at_world_position(
+					block_position
+				)
+
+				if block == BlockRegistry.Block.WORKBENCH:
+					found_workbench = true
+				
+				if block == BlockRegistry.Block.FURNACE:
+					found_furnace = true
+
+				
+
+			if found_workbench and found_furnace:
+				break
+
+		if found_workbench and found_furnace:
+				break
+
+	var changed := false
+
+	if nearby_workbench != found_workbench:
+		nearby_workbench = found_workbench
+		changed = true
+
+	if nearby_furnace != found_furnace:
+		nearby_furnace = found_furnace
+		changed = true
+
+	if changed:
+		crafting_stations_changed.emit()
+
+
+func process_mining(delta: float) -> void:
+	var target := get_target_block()
+
+	if target.is_empty():
+		reset_mining()
+		return
+
+	var block_position: Vector3i = target["position"]
+	var block: int = target["block"]
+
+	if block == BlockRegistry.Block.AIR:
+		reset_mining()
+		return
+
+	if block == BlockRegistry.Block.BEDROCK:
+		reset_mining()
+		return
+
+	if not can_mine_block(block):
+		reset_mining()
+		return
+
+	if not is_mining or mining_block_position != block_position:
+		mining_block_position = block_position
+		mining_progress = 0.0
+		is_mining = true
+
+	var hardness := BlockRegistry.get_hardness(block)
+	var mining_speed := get_mining_speed_for_block(block)
+
+	mining_progress += (mining_speed / hardness) * delta
+	update_mining_cracks(block_position)
+
+	if mining_progress >= 1.0:
+		break_target_block(target)
+		reset_mining()
+
+
+func get_mining_speed_for_block(block: int) -> float:
+	if hotbar == null:
+		return 1.0
+
+	var selected_item: int = hotbar.get_selected_item()
+
+	var tool_type := ItemRegistry.get_tool_type(
+		selected_item
+	)
+
+	var preferred_tool := BlockRegistry.get_preferred_tool(
+		block
+	)
+
+	if preferred_tool == ItemRegistry.ToolType.NONE:
+		return 1.0
+
+	if tool_type != preferred_tool:
+		return 0.35
+
+	return ItemRegistry.get_mining_speed(
+		selected_item
+	)
+
+
+func get_target_block() -> Dictionary:
+	var from := camera.global_position
+	var to := (
+		from
+		+ -camera.global_transform.basis.z
+		* interaction_distance
+	)
+
+	var query := PhysicsRayQueryParameters3D.create(
+		from,
+		to
+	)
+
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	query.collision_mask = 1
+
+	var result := (
+		get_world_3d()
+		.direct_space_state
+		.intersect_ray(query)
+	)
+
+	if result.is_empty():
+		return {}
+
+	var hit_position: Vector3 = result.position
+	var hit_normal: Vector3 = result.normal
+
+	var block_position := Vector3i(
+		floor(hit_position.x - hit_normal.x * 0.01),
+		floor(hit_position.y - hit_normal.y * 0.01),
+		floor(hit_position.z - hit_normal.z * 0.01)
+	)
+
+	var chunk := get_chunk_from_hit(
+		result.collider
+	)
+
+	if chunk == null:
+		return {}
+
+	var local_position := (
+		block_position
+		- Vector3i(chunk.global_position)
+	)
+
+	return {
+		"position": block_position,
+		"local_position": local_position,
+		"chunk": chunk,
+		"block": chunk.get_block_local(local_position)
+	}
+
+
+func break_target_block(target: Dictionary) -> void:
+	var chunk: Chunk = target["chunk"]
+	var block_position: Vector3i = target["position"]
+	var local_position: Vector3i = target["local_position"]
+
+	var broken_block := chunk.remove_block(
+		local_position
+	)
+
+	if broken_block == BlockRegistry.Block.AIR:
+		return
+
+	world.rebuild_chunk_and_neighbors(
+		chunk,
+		local_position
+	)
+
+	var dropped_item := ItemRegistry.get_drop(
+		broken_block
+	)
+
+	if dropped_item == ItemRegistry.Item.NONE:
+		return
+
+	var drop_offset := Vector3(
+		randf_range(-0.18, 0.18),
+		0.5,
+		randf_range(-0.18, 0.18)
+	)
+
+	world.spawn_item(dropped_item, Vector3(block_position) + Vector3(0.5, 0.0, 0.5) + drop_offset)
+
+
+func reset_mining() -> void:
+	mining_progress = 0.0
+	is_mining = false
+	mining_cracks.visible = false
+
+
+func update_mining_cracks(block_position: Vector3i) -> void:
+	if cracks_texture == null:
+		mining_cracks.visible = false
+		return
+
+	var stage := clampi(
+		floori(mining_progress * 9.0),
+		0,
+		8
+	)
+
+	var material := StandardMaterial3D.new()
+	material.albedo_texture = cracks_texture
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+
+	var stage_width := 1.0 / 9.0
+
+	material.uv1_scale = Vector3(
+		stage_width,
+		1.0,
+		1.0
+	)
+
+	material.uv1_offset = Vector3(
+		stage * stage_width,
+		0.0,
+		0.0
+	)
+
+	mining_cracks.material_override = material
+
+	mining_cracks.global_position = (
+		Vector3(block_position)
+		+ Vector3(0.5, 0.5, 0.5)
+	)
+
+	mining_cracks.visible = true
+
+
+func build_mining_cracks_mesh() -> void:
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	var half := 0.5075
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(-half, -half, half),
+		Vector3(half, -half, half),
+		Vector3(half, half, half),
+		Vector3(-half, half, half),
+		Vector3(0, 0, 1)
+	)
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(half, -half, -half),
+		Vector3(-half, -half, -half),
+		Vector3(-half, half, -half),
+		Vector3(half, half, -half),
+		Vector3(0, 0, -1)
+	)
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(-half, -half, -half),
+		Vector3(-half, -half, half),
+		Vector3(-half, half, half),
+		Vector3(-half, half, -half),
+		Vector3(-1, 0, 0)
+	)
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(half, -half, half),
+		Vector3(half, -half, -half),
+		Vector3(half, half, -half),
+		Vector3(half, half, half),
+		Vector3(1, 0, 0)
+	)
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(-half, half, half),
+		Vector3(half, half, half),
+		Vector3(half, half, -half),
+		Vector3(-half, half, -half),
+		Vector3(0, 1, 0)
+	)
+
+	add_crack_face(
+		vertices, normals, uvs, indices,
+		Vector3(-half, -half, -half),
+		Vector3(half, -half, -half),
+		Vector3(half, -half, half),
+		Vector3(-half, -half, half),
+		Vector3(0, -1, 0)
+	)
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(
+		Mesh.PRIMITIVE_TRIANGLES,
+		arrays
+	)
+
+	mining_cracks.mesh = mesh
+
+
+func add_crack_face(
+	vertices: PackedVector3Array,
+	normals: PackedVector3Array,
+	uvs: PackedVector2Array,
+	indices: PackedInt32Array,
+	a: Vector3,
+	b: Vector3,
+	c: Vector3,
+	d: Vector3,
+	normal: Vector3
+) -> void:
+	var start := vertices.size()
+
+	vertices.append_array([
+		a, b, c, d
+	])
+
+	normals.append_array([
+		normal, normal, normal, normal
+	])
+
+	uvs.append_array([
+		Vector2(0, 1),
+		Vector2(1, 1),
+		Vector2(1, 0),
+		Vector2(0, 0)
+	])
+
+	indices.append_array([
+		start,
+		start + 1,
+		start + 2,
+		start,
+		start + 2,
+		start + 3
+	])
+
+
+func can_mine_block(block: int) -> bool:
+	var required_tier := BlockRegistry.get_required_mining_tier(block)
+
+	if required_tier <= 0:
+		return true
+
+	if hotbar == null:
+		return false
+
+	var selected_item: int = hotbar.get_selected_item()
+	var tool_type := ItemRegistry.get_tool_type(selected_item)
+
+	if tool_type != ItemRegistry.ToolType.PICKAXE:
+		return false
+
+	var tool_tier := ItemRegistry.get_mining_tier(selected_item)
+
+	return tool_tier >= required_tier
