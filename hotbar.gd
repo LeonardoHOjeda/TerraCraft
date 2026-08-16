@@ -26,6 +26,7 @@ func _ready() -> void:
 
 	if player:
 		player.inventory.slot_changed.connect(_on_inventory_slot_changed)
+		player.hotbar_controller.selection_changed.connect(_on_selection_changed)
 
 	update_all_slots()
 	update_selection()
@@ -82,64 +83,6 @@ func create_slots() -> void:
 		slots.append(slot)
 		icons.append(icon)
 		amount_labels.append(amount_label)
-
-
-func set_selected_slot(index: int) -> void:
-	selected_slot = wrapi(
-		index,
-		0,
-		Inventory.HOTBAR_SLOT_COUNT
-	)
-
-	update_selection()
-	show_selected_item_name()
-
-
-func get_selected_item() -> int:
-	if player == null:
-		return ItemRegistry.Item.NONE
-
-	var inventory_index := (
-		Inventory.HOTBAR_START
-		+ selected_slot
-	)
-
-	return player.inventory.get_item(inventory_index)
-
-
-func get_selected_block() -> int:
-	return ItemRegistry.get_placeable_block(
-		get_selected_item()
-	)
-
-
-func get_selected_amount() -> int:
-	if player == null:
-		return 0
-
-	var inventory_index := (
-		Inventory.HOTBAR_START
-		+ selected_slot
-	)
-
-	return player.inventory.get_amount(
-		inventory_index
-	)
-
-
-func remove_selected_item(amount: int = 1) -> bool:
-	if player == null:
-		return false
-
-	var inventory_index := (
-		Inventory.HOTBAR_START
-		+ selected_slot
-	)
-
-	return player.inventory.remove_item(
-		inventory_index,
-		amount
-	)
 
 
 func update_all_slots() -> void:
@@ -239,11 +182,20 @@ func _on_inventory_slot_changed(inventory_index: int) -> void:
 	update_slot(hotbar_index)
 
 
+func _on_selection_changed(index: int) -> void:
+	selected_slot = index
+	update_selection()
+	show_selected_item_name()
+
+
 func show_selected_item_name() -> void:
 	if selected_item_label == null:
 		return
 
-	var item_id := get_selected_item()
+	if player == null or player.hotbar_controller == null:
+		return
+
+	var item_id := player.hotbar_controller.get_selected_item()
 
 	if item_id == ItemRegistry.Item.NONE:
 		selected_item_label.text = ""

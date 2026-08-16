@@ -4,16 +4,16 @@ extends Node
 var player: Player
 var camera: Camera3D
 var world: World
-var hotbar
+var hotbar_controller: HotbarController
 var interaction_distance: float
 var place_cooldown: float
 var place_timer := 0.0
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar, distance: float, cooldown: float) -> void:
+func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, distance: float, cooldown: float) -> void:
 	player = new_player
 	camera = new_camera
 	world = new_world
-	hotbar = new_hotbar
+	hotbar_controller = new_hotbar_controller
 	interaction_distance = distance
 	place_cooldown = cooldown
 
@@ -36,9 +36,9 @@ func place_block() -> void:
 	var hit_position: Vector3 = result.position
 	var hit_normal: Vector3 = result.normal
 	var block_position := Vector3i(floor(hit_position.x + hit_normal.x * 0.01), floor(hit_position.y + hit_normal.y * 0.01), floor(hit_position.z + hit_normal.z * 0.01))
-	if is_block_inside_player(block_position) or world == null or hotbar == null:
+	if is_block_inside_player(block_position) or world == null or hotbar_controller == null:
 		return
-	var selected_block: int = hotbar.get_selected_block()
+	var selected_block: int = hotbar_controller.get_selected_block()
 	if selected_block == BlockRegistry.Block.AIR:
 		return
 	var target_chunk := world.get_chunk_at_world_position(block_position)
@@ -47,7 +47,7 @@ func place_block() -> void:
 	var local_position := block_position - Vector3i(target_chunk.global_position)
 	if target_chunk.place_block(local_position, selected_block):
 		world.rebuild_chunk_and_neighbors(target_chunk, local_position)
-		hotbar.remove_selected_item(1)
+		hotbar_controller.consume_selected_item(1)
 
 func is_block_inside_player(block_position: Vector3i) -> bool:
 	var block_min := Vector3(block_position)

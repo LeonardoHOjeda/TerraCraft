@@ -15,19 +15,18 @@ signal crafting_stations_changed
 
 @onready var camera: Camera3D = $Camera3D
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
-@onready var hotbar = get_tree().get_first_node_in_group("hotbar")
 @onready var block_highlight: MeshInstance3D = $BlockHighlight
 @onready var world: World = get_tree().get_first_node_in_group("world")
 @onready var inventory: Inventory = $Inventory
 @onready var mining_cracks: MeshInstance3D = $MiningCracks
 
 var gravity: float = 20.0
-var selected_slot: int = 0
 var is_flying: bool = false
 var inventory_open: bool = false
 var mining_controller: MiningController
 var block_placement_controller: BlockPlacementController
 var station_detector: StationDetector
+var hotbar_controller: HotbarController
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -35,14 +34,18 @@ func _ready() -> void:
 	setup_components()
 
 func setup_components() -> void:
+	hotbar_controller = HotbarController.new()
+	hotbar_controller.name = "HotbarController"
+	add_child(hotbar_controller)
+	hotbar_controller.setup(inventory)
 	mining_controller = MiningController.new()
 	mining_controller.name = "MiningController"
 	add_child(mining_controller)
-	mining_controller.setup(self, camera, world, hotbar, mining_cracks, interaction_distance, cracks_texture)
+	mining_controller.setup(self, camera, world, hotbar_controller, mining_cracks, interaction_distance, cracks_texture)
 	block_placement_controller = BlockPlacementController.new()
 	block_placement_controller.name = "BlockPlacementController"
 	add_child(block_placement_controller)
-	block_placement_controller.setup(self, camera, world, hotbar, interaction_distance, place_cooldown)
+	block_placement_controller.setup(self, camera, world, hotbar_controller, interaction_distance, place_cooldown)
 	station_detector = StationDetector.new()
 	station_detector.name = "StationDetector"
 	add_child(station_detector)
@@ -50,28 +53,13 @@ func setup_components() -> void:
 	station_detector.stations_changed.connect(_on_crafting_stations_changed)
 
 func _unhandled_input(event: InputEvent) -> void:
+	hotbar_controller.handle_input(event)
 	if event is InputEventKey and event.pressed and event.keycode == KEY_F:
 		set_flying(!is_flying)
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		camera.rotation.x = clamp(camera.rotation.x, deg_to_rad(-89.0), deg_to_rad(89.0))
-	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			select_slot(selected_slot - 1)
-		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			select_slot(selected_slot + 1)
-	if event is InputEventKey and event.pressed:
-		match event.keycode:
-			KEY_1: select_slot(0)
-			KEY_2: select_slot(1)
-			KEY_3: select_slot(2)
-			KEY_4: select_slot(3)
-			KEY_5: select_slot(4)
-			KEY_6: select_slot(5)
-			KEY_7: select_slot(6)
-			KEY_8: select_slot(7)
-			KEY_9: select_slot(8)
 	if event.is_action_pressed("ui_cancel") and not inventory_open:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -106,12 +94,6 @@ func _physics_process(delta: float) -> void:
 		velocity.z = move_toward(velocity.z, 0.0, speed)
 	move_and_slide()
 	update_block_highlight()
-
-func select_slot(index: int) -> void:
-	if hotbar == null:
-		return
-	selected_slot = wrapi(index, 0, 9)
-	hotbar.set_selected_slot(selected_slot)
 
 func update_block_highlight() -> void:
 	var from := camera.global_position

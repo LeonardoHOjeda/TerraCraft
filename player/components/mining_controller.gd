@@ -4,7 +4,7 @@ extends Node
 var player: Player
 var camera: Camera3D
 var world: World
-var hotbar
+var hotbar_controller: HotbarController
 var mining_cracks: MeshInstance3D
 var interaction_distance: float
 var cracks_texture: Texture2D
@@ -12,11 +12,11 @@ var mining_progress := 0.0
 var mining_block_position: Vector3i
 var is_mining := false
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar, cracks: MeshInstance3D, distance: float, texture: Texture2D) -> void:
+func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, cracks: MeshInstance3D, distance: float, texture: Texture2D) -> void:
 	player = new_player
 	camera = new_camera
 	world = new_world
-	hotbar = new_hotbar
+	hotbar_controller = new_hotbar_controller
 	mining_cracks = cracks
 	interaction_distance = distance
 	cracks_texture = texture
@@ -51,9 +51,9 @@ func process_mining(delta: float) -> void:
 		reset_mining()
 
 func get_mining_speed_for_block(block: int) -> float:
-	if hotbar == null:
+	if hotbar_controller == null:
 		return 1.0
-	var selected_item: int = hotbar.get_selected_item()
+	var selected_item: int = hotbar_controller.get_selected_item()
 	var tool_type := ItemRegistry.get_tool_type(selected_item)
 	var preferred_tool := BlockRegistry.get_preferred_tool(block)
 	if preferred_tool == ItemRegistry.ToolType.NONE:
@@ -156,9 +156,9 @@ func can_mine_block(block: int) -> bool:
 	var required_tier := BlockRegistry.get_required_mining_tier(block)
 	if required_tier <= 0:
 		return true
-	if hotbar == null:
+	if hotbar_controller == null:
 		return false
-	var selected_item: int = hotbar.get_selected_item()
+	var selected_item: int = hotbar_controller.get_selected_item()
 	if ItemRegistry.get_tool_type(selected_item) != ItemRegistry.ToolType.PICKAXE:
 		return false
 	return ItemRegistry.get_mining_tier(selected_item) >= required_tier
