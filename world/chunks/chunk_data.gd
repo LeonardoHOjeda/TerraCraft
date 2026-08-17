@@ -242,6 +242,16 @@ func get_index(position: Vector3i) -> int:
 	return (position.y * SIZE_XZ + position.z) * SIZE_XZ + position.x
 
 
+func get_blocks_flat_copy() -> PackedInt32Array:
+	var flat := PackedInt32Array()
+	flat.resize(SIZE_XZ * HEIGHT * SIZE_XZ)
+	for x in SIZE_XZ:
+		for y in HEIGHT:
+			for z in SIZE_XZ:
+				flat[(y * SIZE_XZ + z) * SIZE_XZ + x] = blocks[x][y][z]
+	return flat
+
+
 func get_position_from_index(index: int) -> Vector3i:
 	var x := index % SIZE_XZ
 	var yz := floori(float(index) / SIZE_XZ)

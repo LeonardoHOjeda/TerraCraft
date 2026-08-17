@@ -34,10 +34,27 @@ environment = SubResource("Environment_caves")
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
 player_path = NodePath("../Player")
+load_distance = null
+unload_distance = null
 streaming_steps_per_frame = 4
 streaming_main_thread_budget_ms = 3.0
+log_streaming_main_thread_frames = null
 log_stutter_frames = true
+stutter_fps_threshold = null
+log_chunk_timings = false
+log_chunk_load_profile = null
+timing_samples_to_log = null
+log_neighbor_rebuild_timings = null
+log_gameplay_rebuild_timings = null
+gameplay_collision_delay = null
 log_gameplay_collision_stats = true
+log_chunk_override_application = null
+log_collision_section_timings = null
+log_tree_felling = null
+seed = null
+terrain_frequency = null
+base_height = null
+terrain_height = null
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)

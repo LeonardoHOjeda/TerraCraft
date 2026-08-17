@@ -4,6 +4,8 @@ extends Node3D
 const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 const MAX_TREE_LOGS := 64
 const MAX_BACKGROUND_STREAMING_JOBS := 1
+const USE_CSHARP_CHUNK_MESHER := true
+const USE_CSHARP_CHUNK_GENERATOR := true
 const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 	Vector3i.UP,
 	Vector3i.DOWN,
@@ -18,9 +20,10 @@ const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 @export_range(0, 32, 1) var load_distance: int = 3
 @export_range(1, 40, 1) var unload_distance: int = 4
 @export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
+@export_range(0, 8, 1) var max_chunk_unloads_per_frame: int = 1
 @export_range(0.5, 20.0, 0.5) var streaming_main_thread_budget_ms: float = 4.0
 @export var log_streaming_main_thread_frames: bool = false
-@export var log_stutter_frames: bool = false
+@export var log_stutter_frames: bool = true
 @export_range(1.0, 240.0, 1.0) var stutter_fps_threshold: float = 55.0
 @export var log_chunk_timings: bool = true
 @export var log_chunk_load_profile: bool = false
@@ -104,6 +107,14 @@ var streaming_main_task_total_usec: int = 0
 var streaming_main_frame_started_usec: int = 0
 var previous_streaming_frame_profile: Dictionary = {}
 var worst_stutter_frames: Array[Dictionary] = []
+var gc_diagnostics := GcDiagnosticsCs.new()
+var previous_gc_frame_snapshot: Dictionary = {}
+var streaming_targets_update_usec: int = 0
+var streaming_targets_unload_usec: int = 0
+var streaming_targets_unloaded_count: int = 0
+var streaming_targets_unload_profiles: Array[Dictionary] = []
+var pending_chunk_unloads: Array[Vector2i] = []
+var queued_chunk_unloads: Dictionary = {}
 
 
 func _ready() -> void:
@@ -126,6 +137,8 @@ func _exit_tree() -> void:
 
 func _process(_delta: float) -> void:
 	profile_previous_frame_stutter(_delta)
+	reset_streaming_targets_profile()
+	var targets_started_at := Time.get_ticks_usec()
 	if player == null:
 		resolve_player()
 		if player == null:
@@ -137,6 +150,8 @@ func _process(_delta: float) -> void:
 	if new_player_chunk != current_player_chunk:
 		current_player_chunk = new_player_chunk
 		update_streaming_targets()
+	process_pending_chunk_unloads()
+	streaming_targets_update_usec = Time.get_ticks_usec() - targets_started_at
 
 	begin_streaming_main_frame()
 	collect_finished_jobs()
@@ -146,6 +161,13 @@ func _process(_delta: float) -> void:
 	process_main_thread_queue(false)
 	start_background_jobs()
 	finish_streaming_main_frame()
+
+
+func reset_streaming_targets_profile() -> void:
+	streaming_targets_update_usec = 0
+	streaming_targets_unload_usec = 0
+	streaming_targets_unloaded_count = 0
+	streaming_targets_unload_profiles.clear()
 
 
 func begin_streaming_main_frame() -> void:
@@ -193,6 +215,10 @@ func finish_streaming_main_frame() -> void:
 		"mesh_worker_active": has_active_background_stage(ChunkStage.BUILD_MESH_DATA),
 		"active_jobs": active_jobs.size(),
 		"deferred": streaming_main_deferred_tasks,
+		"targets_update_usec": streaming_targets_update_usec,
+		"targets_unload_usec": streaming_targets_unload_usec,
+		"targets_unloaded_count": streaming_targets_unloaded_count,
+		"unload_profiles": streaming_targets_unload_profiles.duplicate(true),
 	}
 	if log_streaming_main_thread_frames and streaming_main_tasks_executed > 0:
 		print(
@@ -214,22 +240,131 @@ func has_active_background_stage(stage: int) -> bool:
 
 
 func profile_previous_frame_stutter(delta: float) -> void:
+	var current_gc_snapshot: Dictionary = gc_diagnostics.Capture()
+	var gc_frame_delta := {
+		"gen0": 0,
+		"gen1": 0,
+		"gen2": 0,
+		"gen0_total": int(current_gc_snapshot["gen0"]),
+		"gen1_total": int(current_gc_snapshot["gen1"]),
+		"gen2_total": int(current_gc_snapshot["gen2"]),
+		"managed_memory": int(current_gc_snapshot["managed_memory"]),
+		"managed_memory_delta": 0,
+		"total_allocated_bytes": int(current_gc_snapshot["total_allocated_bytes"]),
+		"allocated_bytes_delta": 0,
+	}
+	if not previous_gc_frame_snapshot.is_empty():
+		gc_frame_delta["gen0"] = int(current_gc_snapshot["gen0"]) - int(previous_gc_frame_snapshot["gen0"])
+		gc_frame_delta["gen1"] = int(current_gc_snapshot["gen1"]) - int(previous_gc_frame_snapshot["gen1"])
+		gc_frame_delta["gen2"] = int(current_gc_snapshot["gen2"]) - int(previous_gc_frame_snapshot["gen2"])
+		gc_frame_delta["managed_memory_delta"] = int(current_gc_snapshot["managed_memory"]) - int(previous_gc_frame_snapshot["managed_memory"])
+		gc_frame_delta["allocated_bytes_delta"] = int(current_gc_snapshot["total_allocated_bytes"]) - int(previous_gc_frame_snapshot["total_allocated_bytes"])
+	previous_gc_frame_snapshot = current_gc_snapshot
 	if previous_streaming_frame_profile.is_empty() or delta <= 0.0:
 		return
+
 	var frame_time_ms := delta * 1000.0
 	var instantaneous_fps := 1.0 / delta
+
 	if instantaneous_fps >= stutter_fps_threshold:
 		return
+
 	var sample := previous_streaming_frame_profile.duplicate(true)
 	sample["frame_time_ms"] = frame_time_ms
 	sample["fps"] = instantaneous_fps
+	sample["gc"] = gc_frame_delta
+
 	worst_stutter_frames.append(sample)
 	worst_stutter_frames.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
 			return float(a["frame_time_ms"]) > float(b["frame_time_ms"])
 	)
+
 	if worst_stutter_frames.size() > 10:
 		worst_stutter_frames.resize(10)
+
+	print("\n========== LIVE STUTTER ==========")
+	print_stutter_sample(sample)
+	print("player chunk: ", current_player_chunk)
+	print("loaded chunks: ", loaded_chunks.size())
+	print("work queue: ", work_queue.size())
+	print("pending generation results: ", pending_generation_results.size())
+	print("pending mesh data: ", pending_mesh_data.size())
+	print("active jobs: ", active_jobs.size())
+	print_streaming_targets_stutter_sample(sample)
+	print_gc_stutter_sample(sample)
+
+	for job in active_jobs:
+		print(
+			"  active job: chunk=%s stage=%s thread_alive=%s"
+			% [
+				str(job.get("chunk_position")),
+				str(job.get("stage")),
+				str((job["thread"] as Thread).is_alive())
+			]
+		)
+
+	print("==================================\n")
+
+
+func print_streaming_targets_stutter_sample(sample: Dictionary) -> void:
+	print(
+		"targets update: %.3f ms | unloading %.3f ms | unloaded %d chunks"
+		% [
+			float(sample.get("targets_update_usec", 0)) / 1000.0,
+			float(sample.get("targets_unload_usec", 0)) / 1000.0,
+			int(sample.get("targets_unloaded_count", 0)),
+		]
+	)
+	for unload in sample.get("unload_profiles", []):
+		var data: Dictionary = unload
+		print(
+			"  unload %s: total %.3f ms | voxel scan %.3f | queue_free %.3f | cleanup %.3f | block light %.3f | sunlight removal %.3f | sunlight propagation %.3f | cardinal rebuilds %.3f | light rebuild requests %.3f"
+			% [
+				str(data["chunk_position"]),
+				float(data["total_usec"]) / 1000.0,
+				float(data["voxel_scan_usec"]) / 1000.0,
+				float(data["queue_free_usec"]) / 1000.0,
+				float(data["cleanup_usec"]) / 1000.0,
+				float(data["block_light_usec"]) / 1000.0,
+				float(data["sunlight_removal_usec"]) / 1000.0,
+				float(data["sunlight_propagation_usec"]) / 1000.0,
+				float(data["cardinal_rebuilds_usec"]) / 1000.0,
+				float(data["light_rebuild_requests_usec"]) / 1000.0,
+			]
+		)
+		print(
+			"    departed block/sunlight %d/%d | affected block/sunlight chunks %d/%d | rebuild requests block/sunlight %d/%d"
+			% [
+				int(data["departed_sources"]),
+				int(data["departed_sunlight"]),
+				int(data["block_light_changed_chunks"]),
+				int(data["sunlight_changed_chunks"]),
+				int(data["block_light_rebuild_requests"]),
+				int(data["sunlight_rebuild_requests"]),
+			]
+		)
+
+
+func print_gc_stutter_sample(sample: Dictionary) -> void:
+	var gc: Dictionary = sample.get("gc", {})
+	if gc.is_empty():
+		return
+	print(
+		"GC: gen0 +%d | gen1 +%d | gen2 +%d | managed %.1f MB (%+.1f MB) | allocated +%.1f MB | totals %d/%d/%d | total allocated %.1f MB"
+		% [
+			int(gc["gen0"]),
+			int(gc["gen1"]),
+			int(gc["gen2"]),
+			float(gc["managed_memory"]) / 1048576.0,
+			float(gc["managed_memory_delta"]) / 1048576.0,
+			float(gc["allocated_bytes_delta"]) / 1048576.0,
+			int(gc["gen0_total"]),
+			int(gc["gen1_total"]),
+			int(gc["gen2_total"]),
+			float(gc["total_allocated_bytes"]) / 1048576.0,
+		]
+	)
 
 
 func print_stutter_sample(sample: Dictionary) -> void:
@@ -371,13 +506,39 @@ func update_streaming_targets() -> void:
 			}
 			enqueue_work(chunk_position)
 
-	var chunks_to_unload: Array[Vector2i] = []
 	for chunk_position in chunk_stages:
 		if chebyshev_distance(chunk_position, current_player_chunk) > unload_distance:
-			chunks_to_unload.append(chunk_position)
+			enqueue_chunk_unload(chunk_position)
+	for index in range(pending_chunk_unloads.size() - 1, -1, -1):
+		var pending_position := pending_chunk_unloads[index]
+		if chebyshev_distance(pending_position, current_player_chunk) <= unload_distance:
+			pending_chunk_unloads.remove_at(index)
+			queued_chunk_unloads.erase(pending_position)
 
-	for chunk_position in chunks_to_unload:
-		unload_chunk(chunk_position)
+
+func enqueue_chunk_unload(chunk_position: Vector2i) -> void:
+	if queued_chunk_unloads.has(chunk_position):
+		return
+	pending_chunk_unloads.append(chunk_position)
+	queued_chunk_unloads[chunk_position] = true
+
+
+func process_pending_chunk_unloads() -> void:
+	var unloading_started_at := Time.get_ticks_usec()
+	var processed := 0
+	while processed < max_chunk_unloads_per_frame and not pending_chunk_unloads.is_empty():
+		var chunk_position: Vector2i = pending_chunk_unloads.pop_front()
+		queued_chunk_unloads.erase(chunk_position)
+		if not chunk_stages.has(chunk_position):
+			continue
+		if chebyshev_distance(chunk_position, current_player_chunk) <= unload_distance:
+			continue
+		var unload_profile := unload_chunk(chunk_position)
+		streaming_targets_unload_profiles.append(unload_profile)
+		if bool(unload_profile["had_loaded_chunk"]):
+			streaming_targets_unloaded_count += 1
+		processed += 1
+	streaming_targets_unload_usec = Time.get_ticks_usec() - unloading_started_at
 
 
 func enqueue_work(chunk_position: Vector2i) -> void:
@@ -389,40 +550,64 @@ func enqueue_work(chunk_position: Vector2i) -> void:
 
 func start_background_jobs() -> void:
 	var started := 0
-	while (
-		active_jobs.size() < MAX_BACKGROUND_STREAMING_JOBS
-		and started < streaming_steps_per_frame
-	):
+
+	while (active_jobs.size() < MAX_BACKGROUND_STREAMING_JOBS and started < streaming_steps_per_frame):
 		if streaming_budget_reached():
 			return
+
 		# Finish a generated chunk's mesh before starting another generation job.
 		var chunk_position := pop_work_for_stages([ChunkStage.BUILD_MESH_DATA])
+
 		if chunk_position == INVALID_CHUNK_POSITION:
 			chunk_position = pop_work_for_stages([ChunkStage.GENERATE_DATA])
+
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
+
 		var stage: int = chunk_stages[chunk_position]
 		var version: int = chunk_versions[chunk_position]
 		var worker: RefCounted
 		var callable: Callable
+
 		if stage == ChunkStage.GENERATE_DATA:
 			var dispatch_started_at := Time.get_ticks_usec()
 			var parameters := create_generation_parameters(chunk_position)
-			chunk_timings[chunk_position]["generation_dispatch_usec"] = Time.get_ticks_usec() - dispatch_started_at
-			worker = ChunkGenerator.new()
-			callable = Callable(worker, "generate_data").bind(parameters)
+
+			chunk_timings[chunk_position]["generation_dispatch_usec"] = (
+				Time.get_ticks_usec() - dispatch_started_at
+			)
+
+			if USE_CSHARP_CHUNK_GENERATOR:
+				worker = ChunkGeneratorCs.new()
+				callable = Callable(worker, "GenerateData").bind(parameters)
+			else:
+				worker = ChunkGenerator.new()
+				callable = Callable(worker, "generate_data").bind(parameters)
+
 			chunk_stages[chunk_position] = ChunkStage.GENERATING
+
 			record_streaming_main_task(
 				"generation_dispatch(%d,%d)" % [chunk_position.x, chunk_position.y],
 				dispatch_started_at
 			)
+
 		else:
 			var snapshot_started_at := Time.get_ticks_usec()
 			var snapshot := create_meshing_snapshot(chunk_position)
-			chunk_timings[chunk_position]["snapshot_usec"] = Time.get_ticks_usec() - snapshot_started_at
-			worker = ChunkMesher.new()
-			callable = Callable(worker, "build_mesh_data").bind(snapshot)
+
+			chunk_timings[chunk_position]["snapshot_usec"] = (
+				Time.get_ticks_usec() - snapshot_started_at
+			)
+
+			if USE_CSHARP_CHUNK_MESHER:
+				worker = ChunkMesherCs.new()
+				callable = Callable(worker, "BuildMeshData").bind(snapshot)
+			else:
+				worker = ChunkMesher.new()
+				callable = Callable(worker, "build_mesh_data").bind(snapshot)
+
 			chunk_stages[chunk_position] = ChunkStage.MESHING
+
 			record_streaming_main_task(
 				"snapshot(%d,%d)" % [chunk_position.x, chunk_position.y],
 				snapshot_started_at,
@@ -431,10 +616,12 @@ func start_background_jobs() -> void:
 
 		var thread := Thread.new()
 		var error := thread.start(callable, Thread.PRIORITY_LOW)
+
 		if error != OK:
 			chunk_stages[chunk_position] = stage
 			enqueue_work(chunk_position)
 			return
+
 		active_jobs.append({
 			"thread": thread,
 			"chunk_position": chunk_position,
@@ -442,6 +629,7 @@ func start_background_jobs() -> void:
 			"stage": stage,
 			"worker": worker,
 		})
+
 		started += 1
 
 
@@ -727,6 +915,9 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 		chunk_timings[chunk_position]["snapshot_frame"] = Engine.get_process_frames()
 	return {
 		"data": data_snapshot,
+		"blocks_flat": data_snapshot.get_blocks_flat_copy(),
+		"block_light_flat": data_snapshot.block_light.duplicate(),
+		"sun_light_flat": data_snapshot.sun_light.duplicate(),
 		"negative_x": negative_x,
 		"positive_x": positive_x,
 		"negative_z": negative_z,
@@ -1138,37 +1329,44 @@ func print_chunk_timing(chunk_position: Vector2i, is_rebuild: bool) -> void:
 	)
 
 
-func unload_chunk(chunk_position: Vector2i) -> void:
+func unload_chunk(chunk_position: Vector2i) -> Dictionary:
+	var total_started_at := Time.get_ticks_usec()
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	var had_loaded_chunk := chunk != null
 	var departed_sources: Array[Dictionary] = []
 	var departed_sunlight: Array[Dictionary] = []
+	var voxel_scan_started_at := Time.get_ticks_usec()
 	if chunk != null:
-		for x in Chunk.SIZE_XZ:
-			for y in Chunk.HEIGHT:
-				for z in Chunk.SIZE_XZ:
-					var local_position := Vector3i(x, y, z)
-					var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
-					if emission > 0:
-						departed_sources.append({"position": chunk.local_to_world(local_position), "level": emission})
-					if (
-						(x == 0 or x == Chunk.SIZE_XZ - 1 or z == 0 or z == Chunk.SIZE_XZ - 1)
-						and chunk.data.get_sun_light(local_position) > 0
-					):
-						departed_sunlight.append({
-							"position": chunk.local_to_world(local_position),
-							"level": chunk.data.get_sun_light(local_position),
-						})
+		for block_index in chunk.data.emissive_block_indices:
+			var local_position := chunk.data.get_position_from_index(block_index)
+			var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
+			if emission > 0:
+				departed_sources.append({"position": chunk.local_to_world(local_position), "level": emission})
+		departed_sunlight = collect_departed_sunlight_boundaries(chunk)
+	var voxel_scan_usec := Time.get_ticks_usec() - voxel_scan_started_at
+	var queue_free_started_at := Time.get_ticks_usec()
+	if chunk != null:
 		# Future persistence hook: save modified block overrides before removing this chunk.
 		chunk.queue_free()
+	var queue_free_usec := Time.get_ticks_usec() - queue_free_started_at
+	var cleanup_started_at := Time.get_ticks_usec()
 	loaded_chunks.erase(chunk_position)
 	for index in range(pending_generation_results.size() - 1, -1, -1):
 		if pending_generation_results[index]["chunk_position"] == chunk_position:
 			pending_generation_results.remove_at(index)
+	var cleanup_usec := Time.get_ticks_usec() - cleanup_started_at
+	var block_light_started_at := Time.get_ticks_usec()
 	var light_changed_chunks := remove_departed_light_sources(departed_sources)
+	var block_light_usec := Time.get_ticks_usec() - block_light_started_at
 	var sun_changed_chunks: Dictionary = {}
 	var sun_propagation_queue: Array[Vector3i] = []
+	var sunlight_removal_started_at := Time.get_ticks_usec()
 	process_sunlight_removal(departed_sunlight, sun_propagation_queue, sun_changed_chunks)
+	var sunlight_removal_usec := Time.get_ticks_usec() - sunlight_removal_started_at
+	var sunlight_propagation_started_at := Time.get_ticks_usec()
 	propagate_sunlight(sun_propagation_queue, sun_changed_chunks)
+	var sunlight_propagation_usec := Time.get_ticks_usec() - sunlight_propagation_started_at
+	cleanup_started_at = Time.get_ticks_usec()
 	chunk_stages.erase(chunk_position)
 	initial_chunks.erase(chunk_position)
 	chunk_timings.erase(chunk_position)
@@ -1181,11 +1379,122 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 	gameplay_visual_rebuild_counts.erase(chunk_position)
 	pending_collision_sections.erase(chunk_position)
 	gameplay_collision_section_counts.erase(chunk_position)
+	cleanup_usec += Time.get_ticks_usec() - cleanup_started_at
+	var cardinal_rebuilds_started_at := Time.get_ticks_usec()
 	request_cardinal_neighbor_rebuilds(chunk_position)
+	var cardinal_rebuilds_usec := Time.get_ticks_usec() - cardinal_rebuilds_started_at
+	var light_rebuild_requests_started_at := Time.get_ticks_usec()
+	var block_light_rebuild_requests := 0
 	for changed_position in light_changed_chunks:
 		request_chunk_rebuild(changed_position)
+		block_light_rebuild_requests += 1
+	var sunlight_rebuild_requests := 0
 	for changed_position in sun_changed_chunks:
 		request_chunk_rebuild(changed_position)
+		sunlight_rebuild_requests += 1
+	var light_rebuild_requests_usec := Time.get_ticks_usec() - light_rebuild_requests_started_at
+	return {
+		"chunk_position": chunk_position,
+		"total_usec": Time.get_ticks_usec() - total_started_at,
+		"voxel_scan_usec": voxel_scan_usec,
+		"queue_free_usec": queue_free_usec,
+		"cleanup_usec": cleanup_usec,
+		"block_light_usec": block_light_usec,
+		"sunlight_removal_usec": sunlight_removal_usec,
+		"sunlight_propagation_usec": sunlight_propagation_usec,
+		"cardinal_rebuilds_usec": cardinal_rebuilds_usec,
+		"light_rebuild_requests_usec": light_rebuild_requests_usec,
+		"departed_sources": departed_sources.size(),
+		"departed_sunlight": departed_sunlight.size(),
+		"block_light_changed_chunks": light_changed_chunks.size(),
+		"sunlight_changed_chunks": sun_changed_chunks.size(),
+		"block_light_rebuild_requests": block_light_rebuild_requests,
+		"sunlight_rebuild_requests": sunlight_rebuild_requests,
+		"had_loaded_chunk": had_loaded_chunk,
+	}
+
+
+func collect_departed_sunlight_boundaries(chunk: Chunk) -> Array[Dictionary]:
+	var departed_by_position: Dictionary = {}
+	collect_departed_sunlight_x_face(
+		chunk, chunk.chunk_position + Vector2i.LEFT, 0, Chunk.SIZE_XZ - 1, departed_by_position
+	)
+	collect_departed_sunlight_x_face(
+		chunk, chunk.chunk_position + Vector2i.RIGHT, Chunk.SIZE_XZ - 1, 0, departed_by_position
+	)
+	collect_departed_sunlight_z_face(
+		chunk, chunk.chunk_position + Vector2i.UP, 0, Chunk.SIZE_XZ - 1, departed_by_position
+	)
+	collect_departed_sunlight_z_face(
+		chunk, chunk.chunk_position + Vector2i.DOWN, Chunk.SIZE_XZ - 1, 0, departed_by_position
+	)
+	var departed: Array[Dictionary] = []
+	for entry in departed_by_position.values():
+		departed.append(entry)
+	return departed
+
+
+func collect_departed_sunlight_x_face(
+	chunk: Chunk,
+	neighbor_position: Vector2i,
+	local_x: int,
+	neighbor_x: int,
+	departed_by_position: Dictionary
+) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in Chunk.HEIGHT:
+		for z in Chunk.SIZE_XZ:
+			append_departed_sunlight_if_required(
+				chunk,
+				Vector3i(local_x, y, z),
+				neighbor,
+				Vector3i(neighbor_x, y, z),
+				departed_by_position
+			)
+
+
+func collect_departed_sunlight_z_face(
+	chunk: Chunk,
+	neighbor_position: Vector2i,
+	local_z: int,
+	neighbor_z: int,
+	departed_by_position: Dictionary
+) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in Chunk.HEIGHT:
+		for x in Chunk.SIZE_XZ:
+			append_departed_sunlight_if_required(
+				chunk,
+				Vector3i(x, y, local_z),
+				neighbor,
+				Vector3i(x, y, neighbor_z),
+				departed_by_position
+			)
+
+
+func append_departed_sunlight_if_required(
+	chunk: Chunk,
+	local_position: Vector3i,
+	neighbor: Chunk,
+	neighbor_local: Vector3i,
+	departed_by_position: Dictionary
+) -> void:
+	var departed_level := chunk.data.get_sun_light(local_position)
+	if departed_level <= 0:
+		return
+	var neighbor_level := neighbor.data.get_sun_light(neighbor_local)
+	var neighbor_source_level := 15 if neighbor.data.is_direct_sunlight(neighbor_local) else 0
+	if neighbor_level >= departed_level or neighbor_level <= neighbor_source_level:
+		return
+	var world_position := chunk.local_to_world(local_position)
+	departed_by_position[world_position] = {
+		"position": world_position,
+		"level": departed_level,
+	}
 
 
 func request_cardinal_neighbor_rebuilds(chunk_position: Vector2i) -> void:
