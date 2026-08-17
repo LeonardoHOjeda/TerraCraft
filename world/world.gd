@@ -13,6 +13,10 @@ const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 @export_range(1, 100, 1) var timing_samples_to_log: int = 12
 @export var log_neighbor_rebuild_timings: bool = false
 @export var log_gameplay_rebuild_timings: bool = false
+@export_range(0.05, 0.5, 0.01) var gameplay_collision_delay: float = 0.15
+@export var log_gameplay_collision_stats: bool = false
+@export var log_chunk_override_application: bool = false
+@export var log_collision_section_timings: bool = false
 
 @export var seed: int = 12345
 @export var terrain_frequency: float = 0.025
@@ -54,6 +58,12 @@ var version_counters: Dictionary = {}
 var pending_mesh_data: Dictionary = {}
 var active_jobs: Array[Dictionary] = []
 var gameplay_rebuilds: Dictionary = {}
+var gameplay_collision_deadlines: Dictionary = {}
+var gameplay_change_counts: Dictionary = {}
+var gameplay_visual_rebuild_counts: Dictionary = {}
+var chunk_overrides: Dictionary = {}
+var pending_collision_sections: Dictionary = {}
+var gameplay_collision_section_counts: Dictionary = {}
 var timing_samples_logged: int = 0
 var current_player_chunk := INVALID_CHUNK_POSITION
 var player: Node3D
@@ -90,6 +100,7 @@ func _process(_delta: float) -> void:
 
 	collect_finished_jobs()
 	start_background_jobs()
+	enqueue_due_gameplay_collisions()
 	process_main_thread_queue()
 
 
@@ -263,6 +274,9 @@ func chebyshev_distance(a: Vector2i, b: Vector2i) -> int:
 
 
 func create_generation_parameters(chunk_position: Vector2i) -> Dictionary:
+	var overrides_snapshot: Dictionary = {}
+	if chunk_overrides.has(chunk_position):
+		overrides_snapshot = (chunk_overrides[chunk_position] as Dictionary).duplicate(true)
 	return {
 		"chunk_position": chunk_position,
 		"continental_noise": continental_noise.duplicate() as FastNoiseLite,
@@ -279,6 +293,7 @@ func create_generation_parameters(chunk_position: Vector2i) -> Dictionary:
 		"platinum_noise": platinum_noise.duplicate() as FastNoiseLite,
 		"terrain_height": terrain_height,
 		"base_height": base_height,
+		"overrides": overrides_snapshot,
 	}
 
 
@@ -297,7 +312,12 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	add_child(chunk)
 	loaded_chunks[chunk_position] = chunk
 	chunk.initialize_from_data(self, chunk_position, result["data"])
-	# Future persistence hook: apply saved block overrides here, after procedural generation.
+	if log_chunk_override_application and int(result.get("override_count", 0)) > 0:
+		print(
+			"Chunk (%d,%d): applying %d block overrides"
+			% [chunk_position.x, chunk_position.y, int(result["override_count"])]
+		)
+	# Procedural data already includes the immutable override snapshot applied by the worker.
 	chunk_timings[chunk_position]["generation_worker_usec"] = result["worker_usec"]
 	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
 	enqueue_work(chunk_position)
@@ -355,17 +375,99 @@ func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 	chunk.apply_mesh_data(pending_mesh_data[chunk_position])
 	pending_mesh_data.erase(chunk_position)
 	chunk_timings[chunk_position]["apply_mesh_usec"] = Time.get_ticks_usec() - started_at
-	chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
-	enqueue_work(chunk_position)
+	if initial_chunks.has(chunk_position):
+		set_all_collision_sections_pending(chunk_position)
+		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+		enqueue_work(chunk_position)
+	elif gameplay_rebuilds.has(chunk_position):
+		gameplay_visual_rebuild_counts[chunk_position] = int(
+			gameplay_visual_rebuild_counts.get(chunk_position, 0)
+		) + 1
+		if has_pending_collision_sections(chunk_position):
+			chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+			enqueue_work(chunk_position)
+		else:
+			chunk_stages[chunk_position] = ChunkStage.READY
+	else:
+		set_all_collision_sections_pending(chunk_position)
+		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+		enqueue_work(chunk_position)
+
+
+func enqueue_due_gameplay_collisions() -> void:
+	var now := Time.get_ticks_usec()
+	for chunk_position in gameplay_collision_deadlines:
+		var deadlines: Dictionary = gameplay_collision_deadlines[chunk_position]
+		var due_sections: Array[int] = []
+		for section in deadlines:
+			if now >= int(deadlines[section]):
+				due_sections.append(section)
+		for section in due_sections:
+			deadlines.erase(section)
+			add_pending_collision_section(chunk_position, section)
+		gameplay_collision_deadlines[chunk_position] = deadlines
+		if due_sections.is_empty():
+			continue
+		if not chunk_stages.has(chunk_position):
+			continue
+		if chunk_stages[chunk_position] != ChunkStage.READY:
+			continue
+		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+		enqueue_work(chunk_position)
+
+
+func set_all_collision_sections_pending(chunk_position: Vector2i) -> void:
+	var sections: Array[int] = []
+	for section in Chunk.COLLISION_SECTION_COUNT:
+		sections.append(section)
+	pending_collision_sections[chunk_position] = sections
+
+
+func add_pending_collision_section(chunk_position: Vector2i, section: int) -> void:
+	var sections: Array = pending_collision_sections.get(chunk_position, [])
+	if not sections.has(section):
+		sections.append(section)
+		sections.sort()
+	pending_collision_sections[chunk_position] = sections
+
+
+func has_pending_collision_sections(chunk_position: Vector2i) -> bool:
+	return (
+		pending_collision_sections.has(chunk_position)
+		and not (pending_collision_sections[chunk_position] as Array).is_empty()
+	)
 
 
 func build_chunk_collision(chunk_position: Vector2i) -> void:
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
-	if chunk == null:
+	if chunk == null or not has_pending_collision_sections(chunk_position):
 		return
+	var sections: Array = pending_collision_sections[chunk_position]
+	var section: int = sections.pop_front()
+	pending_collision_sections[chunk_position] = sections
 	var started_at := Time.get_ticks_usec()
-	chunk.build_collision_only()
-	chunk_timings[chunk_position]["collision_usec"] = Time.get_ticks_usec() - started_at
+	chunk.build_collision_section(section)
+	var elapsed := Time.get_ticks_usec() - started_at
+	chunk_timings[chunk_position]["collision_usec"] = int(
+		chunk_timings[chunk_position].get("collision_usec", 0)
+	) + elapsed
+	if gameplay_rebuilds.has(chunk_position):
+		gameplay_collision_section_counts[chunk_position] = int(
+			gameplay_collision_section_counts.get(chunk_position, 0)
+		) + 1
+	if log_collision_section_timings:
+		var min_y := section * Chunk.COLLISION_SECTION_HEIGHT
+		var max_y := min_y + Chunk.COLLISION_SECTION_HEIGHT - 1
+		print(
+			"Collision section (%d,%d)[Y%d-%d]: %.2f ms"
+			% [chunk_position.x, chunk_position.y, min_y, max_y, float(elapsed) / 1000.0]
+		)
+
+	if has_pending_collision_sections(chunk_position):
+		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+		enqueue_work(chunk_position)
+		return
+	pending_collision_sections.erase(chunk_position)
 	chunk_stages[chunk_position] = ChunkStage.READY
 
 	if initial_chunks.has(chunk_position):
@@ -374,12 +476,25 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 			print_chunk_timing(chunk_position, false)
 			timing_samples_logged += 1
 		request_cardinal_neighbor_rebuilds(chunk_position)
-	elif gameplay_rebuilds.has(chunk_position):
-		gameplay_rebuilds.erase(chunk_position)
+	elif gameplay_rebuilds.has(chunk_position) and gameplay_collision_deadlines_empty(chunk_position):
 		if log_gameplay_rebuild_timings:
 			print_gameplay_rebuild_timing(chunk_position)
+		if log_gameplay_collision_stats:
+			print_gameplay_collision_stats(chunk_position)
+		gameplay_rebuilds.erase(chunk_position)
+		gameplay_collision_deadlines.erase(chunk_position)
+		gameplay_change_counts.erase(chunk_position)
+		gameplay_visual_rebuild_counts.erase(chunk_position)
+		gameplay_collision_section_counts.erase(chunk_position)
 	elif log_neighbor_rebuild_timings:
 		print_chunk_timing(chunk_position, true)
+
+
+func gameplay_collision_deadlines_empty(chunk_position: Vector2i) -> bool:
+	return (
+		not gameplay_collision_deadlines.has(chunk_position)
+		or (gameplay_collision_deadlines[chunk_position] as Dictionary).is_empty()
+	)
 
 
 func print_gameplay_rebuild_timing(chunk_position: Vector2i) -> void:
@@ -392,6 +507,22 @@ func print_gameplay_rebuild_timing(chunk_position: Vector2i) -> void:
 			float(timing.get("snapshot_usec", 0)) / 1000.0,
 			float(timing.get("mesh_worker_usec", 0)) / 1000.0,
 			float(timing.get("apply_mesh_usec", 0)) / 1000.0,
+			float(timing.get("collision_usec", 0)) / 1000.0,
+		]
+	)
+
+
+func print_gameplay_collision_stats(chunk_position: Vector2i) -> void:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	print(
+		"Gameplay collision (%d,%d): %d changes grouped | %d visual rebuilds | sections rebuilt %d/%d | collision total %.2f ms"
+		% [
+			chunk_position.x,
+			chunk_position.y,
+			int(gameplay_change_counts.get(chunk_position, 0)),
+			int(gameplay_visual_rebuild_counts.get(chunk_position, 0)),
+			int(gameplay_collision_section_counts.get(chunk_position, 0)),
+			Chunk.COLLISION_SECTION_COUNT,
 			float(timing.get("collision_usec", 0)) / 1000.0,
 		]
 	)
@@ -440,6 +571,11 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 	pending_mesh_data.erase(chunk_position)
 	queued_work.erase(chunk_position)
 	gameplay_rebuilds.erase(chunk_position)
+	gameplay_collision_deadlines.erase(chunk_position)
+	gameplay_change_counts.erase(chunk_position)
+	gameplay_visual_rebuild_counts.erase(chunk_position)
+	pending_collision_sections.erase(chunk_position)
+	gameplay_collision_section_counts.erase(chunk_position)
 	request_cardinal_neighbor_rebuilds(chunk_position)
 
 
@@ -448,11 +584,28 @@ func request_cardinal_neighbor_rebuilds(chunk_position: Vector2i) -> void:
 		request_chunk_rebuild(chunk_position + offset)
 
 
-func request_chunk_rebuild(chunk_position: Vector2i, gameplay_priority: bool = false) -> void:
+func request_chunk_rebuild(
+	chunk_position: Vector2i,
+	gameplay_priority: bool = false,
+	collision_sections: Array[int] = []
+) -> void:
 	if not loaded_chunks.has(chunk_position):
 		return
 	if gameplay_priority:
-		gameplay_rebuilds[chunk_position] = true
+		if not gameplay_rebuilds.has(chunk_position):
+			gameplay_change_counts[chunk_position] = 0
+			gameplay_visual_rebuild_counts[chunk_position] = 0
+			gameplay_collision_section_counts[chunk_position] = 0
+			gameplay_rebuilds[chunk_position] = true
+		gameplay_change_counts[chunk_position] = int(
+			gameplay_change_counts.get(chunk_position, 0)
+		) + 1
+		var deadline := Time.get_ticks_usec() + roundi(gameplay_collision_delay * 1000000.0)
+		var deadlines: Dictionary = gameplay_collision_deadlines.get(chunk_position, {})
+		for section in collision_sections:
+			deadlines[section] = deadline
+			remove_pending_collision_section(chunk_position, section)
+		gameplay_collision_deadlines[chunk_position] = deadlines
 	var stage: int = chunk_stages.get(chunk_position, ChunkStage.READY)
 	if stage == ChunkStage.GENERATE_DATA or stage == ChunkStage.GENERATING:
 		return
@@ -466,6 +619,14 @@ func request_chunk_rebuild(chunk_position: Vector2i, gameplay_priority: bool = f
 	chunk_timings[chunk_position]["apply_mesh_usec"] = 0
 	chunk_timings[chunk_position]["collision_usec"] = 0
 	enqueue_work(chunk_position)
+
+
+func remove_pending_collision_section(chunk_position: Vector2i, section: int) -> void:
+	if not pending_collision_sections.has(chunk_position):
+		return
+	var sections: Array = pending_collision_sections[chunk_position]
+	sections.erase(section)
+	pending_collision_sections[chunk_position] = sections
 
 
 func setup_noise() -> void:
@@ -640,10 +801,42 @@ func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
 
 
 func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
-	request_chunk_rebuild(chunk.chunk_position, true)
+	record_block_override(chunk, local_position)
+	var collision_sections := get_affected_collision_sections(local_position.y)
+	request_chunk_rebuild(chunk.chunk_position, true, collision_sections)
 	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
-		request_chunk_rebuild(neighbor_position, true)
+		request_chunk_rebuild(neighbor_position, true, collision_sections)
+
+
+func get_affected_collision_sections(local_y: int) -> Array[int]:
+	var section := clampi(
+		floori(float(local_y) / Chunk.COLLISION_SECTION_HEIGHT),
+		0,
+		Chunk.COLLISION_SECTION_COUNT - 1
+	)
+	var sections: Array[int] = [section]
+	var section_local_y := local_y % Chunk.COLLISION_SECTION_HEIGHT
+	if section_local_y == 0 and section > 0:
+		sections.append(section - 1)
+	elif (
+		section_local_y == Chunk.COLLISION_SECTION_HEIGHT - 1
+		and section < Chunk.COLLISION_SECTION_COUNT - 1
+	):
+		sections.append(section + 1)
+	sections.sort()
+	return sections
 
 
 func rebuild_chunk_at(chunk_position: Vector2i) -> void:
-	request_chunk_rebuild(chunk_position, true)
+	var all_sections: Array[int] = []
+	for section in Chunk.COLLISION_SECTION_COUNT:
+		all_sections.append(section)
+	request_chunk_rebuild(chunk_position, true, all_sections)
+
+
+func record_block_override(chunk: Chunk, local_position: Vector3i) -> void:
+	if chunk == null or not chunk.is_valid_local_position(local_position):
+		return
+	var overrides: Dictionary = chunk_overrides.get(chunk.chunk_position, {})
+	overrides[local_position] = chunk.get_block_local(local_position)
+	chunk_overrides[chunk.chunk_position] = overrides

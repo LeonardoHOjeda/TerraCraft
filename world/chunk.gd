@@ -3,6 +3,8 @@ extends MeshInstance3D
 
 const SIZE_XZ := ChunkData.SIZE_XZ
 const HEIGHT := ChunkData.HEIGHT
+const COLLISION_SECTION_HEIGHT := ChunkMesher.COLLISION_SECTION_HEIGHT
+const COLLISION_SECTION_COUNT := ChunkMesher.COLLISION_SECTION_COUNT
 
 var world: World
 
@@ -12,6 +14,7 @@ var data := ChunkData.new()
 var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
 var collision_builder := ChunkCollisionBuilder.new()
+var collision_section_mesh_data: Array[Dictionary] = []
 
 
 static func from_collider(collider: Object) -> Chunk:
@@ -121,14 +124,31 @@ func rebuild_mesh() -> void:
 
 func build_mesh_only() -> void:
 	mesh = mesher.build(data, Callable(self, "get_neighbor_block"))
+	collision_section_mesh_data = mesher.last_collision_sections
 
 
 func apply_mesh_data(mesh_data: Dictionary) -> void:
+	collision_section_mesh_data = mesh_data["collision_sections"]
 	mesh = mesher.create_mesh(mesh_data)
 
 
 func build_collision_only() -> void:
 	collision_builder.rebuild(self, self)
+
+
+func build_collision_section(section: int) -> void:
+	collision_builder.rebuild_section(self, section, get_collision_section_mesh_data(section))
+
+
+func get_collision_section_mesh_data(section: int) -> Dictionary:
+	if section < 0 or section >= collision_section_mesh_data.size():
+		return {
+			"vertices": PackedVector3Array(),
+			"normals": PackedVector3Array(),
+			"uvs": PackedVector2Array(),
+			"indices": PackedInt32Array(),
+		}
+	return collision_section_mesh_data[section]
 
 
 func remove_block(position: Vector3i) -> int:

@@ -2,6 +2,8 @@ class_name ChunkMesher
 extends RefCounted
 
 const ATLAS_SIZE := 16.0
+const COLLISION_SECTION_HEIGHT := 16
+const COLLISION_SECTION_COUNT := ChunkData.HEIGHT / COLLISION_SECTION_HEIGHT
 
 const DIRECTIONS := [
 	Vector3i(0, 1, 0),
@@ -16,6 +18,11 @@ var vertices := PackedVector3Array()
 var normals := PackedVector3Array()
 var uvs := PackedVector2Array()
 var indices := PackedInt32Array()
+var section_vertices: Array[PackedVector3Array] = []
+var section_normals: Array[PackedVector3Array] = []
+var section_uvs: Array[PackedVector2Array] = []
+var section_indices: Array[PackedInt32Array] = []
+var last_collision_sections: Array[Dictionary] = []
 
 
 func build(data: ChunkData, neighbor_block_provider: Callable) -> ArrayMesh:
@@ -49,6 +56,15 @@ func reset_buffers() -> void:
 	normals.clear()
 	uvs.clear()
 	indices.clear()
+	section_vertices.clear()
+	section_normals.clear()
+	section_uvs.clear()
+	section_indices.clear()
+	for _section in COLLISION_SECTION_COUNT:
+		section_vertices.append(PackedVector3Array())
+		section_normals.append(PackedVector3Array())
+		section_uvs.append(PackedVector2Array())
+		section_indices.append(PackedInt32Array())
 
 
 func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
@@ -74,12 +90,26 @@ func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
 
 
 func get_mesh_data() -> Dictionary:
+	last_collision_sections = get_collision_section_data()
 	return {
 		"vertices": vertices,
 		"normals": normals,
 		"uvs": uvs,
 		"indices": indices,
+		"collision_sections": last_collision_sections,
 	}
+
+
+func get_collision_section_data() -> Array[Dictionary]:
+	var sections: Array[Dictionary] = []
+	for section in COLLISION_SECTION_COUNT:
+		sections.append({
+			"vertices": section_vertices[section],
+			"normals": section_normals[section],
+			"uvs": section_uvs[section],
+			"indices": section_indices[section],
+		})
+	return sections
 
 
 func create_mesh(mesh_data: Dictionary) -> ArrayMesh:
@@ -137,6 +167,40 @@ func add_face(block_position: Vector3i, direction: Vector3i, block: int) -> void
 	indices.append(start_index)
 	indices.append(start_index + 3)
 	indices.append(start_index + 2)
+
+	add_collision_face(block_position, face_vertices, face_uvs, direction)
+
+
+func add_collision_face(
+	block_position: Vector3i,
+	face_vertices: Array[Vector3],
+	face_uvs: Array[Vector2],
+	direction: Vector3i
+) -> void:
+	var section := clampi(
+		floori(float(block_position.y) / COLLISION_SECTION_HEIGHT),
+		0,
+		COLLISION_SECTION_COUNT - 1
+	)
+	var target_vertices := section_vertices[section]
+	var target_normals := section_normals[section]
+	var target_uvs := section_uvs[section]
+	var target_indices := section_indices[section]
+	var start_index := target_vertices.size()
+	for i in face_vertices.size():
+		target_vertices.append(Vector3(block_position) + face_vertices[i])
+		target_normals.append(Vector3(direction))
+		target_uvs.append(face_uvs[i])
+	target_indices.append(start_index)
+	target_indices.append(start_index + 2)
+	target_indices.append(start_index + 1)
+	target_indices.append(start_index)
+	target_indices.append(start_index + 3)
+	target_indices.append(start_index + 2)
+	section_vertices[section] = target_vertices
+	section_normals[section] = target_normals
+	section_uvs[section] = target_uvs
+	section_indices[section] = target_indices
 
 
 func get_block_texture(block: int, direction: Vector3i) -> Vector2i:

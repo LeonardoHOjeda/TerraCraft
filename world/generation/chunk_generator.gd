@@ -41,10 +41,19 @@ func generate_data(parameters: Dictionary) -> Dictionary:
 		parameters["terrain_height"],
 		parameters["base_height"]
 	)
+	var overrides: Dictionary = parameters.get("overrides", {})
+	apply_overrides(data, overrides)
 	return {
 		"data": data,
 		"worker_usec": Time.get_ticks_usec() - started_at,
+		"override_count": overrides.size(),
 	}
+
+
+func apply_overrides(data: ChunkData, overrides: Dictionary) -> void:
+	for local_position in overrides:
+		if data.is_valid_position(local_position):
+			data.set_block(local_position, int(overrides[local_position]))
 
 
 func populate(
