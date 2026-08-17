@@ -2,19 +2,19 @@ class_name CraftingPanel
 extends GridContainer
 
 var inventory: Inventory
-var player: Player
+var station_access: StationDetector
 var atlas: Texture2D
 var crafting_buttons: Array[Button] = []
 
 
-func setup(new_inventory: Inventory, new_player: Player, new_atlas: Texture2D) -> void:
+func setup(new_inventory: Inventory, new_station_access: StationDetector, new_atlas: Texture2D) -> void:
 	inventory = new_inventory
-	player = new_player
+	station_access = new_station_access
 	atlas = new_atlas
 	add_theme_constant_override("h_separation", 4)
 	add_theme_constant_override("v_separation", 4)
 	inventory.slot_changed.connect(_on_inventory_changed)
-	player.crafting_stations_changed.connect(update_crafting_buttons)
+	station_access.stations_changed.connect(update_crafting_buttons)
 	create_crafting_buttons()
 
 
@@ -60,21 +60,21 @@ func create_crafting_buttons() -> void:
 
 
 func update_crafting_buttons() -> void:
-	if player == null:
+	if inventory == null or station_access == null:
 		return
 
 	for i in CraftingRegistry.RECIPES.size():
 		var recipe: Dictionary = CraftingRegistry.RECIPES[i]
-		var can_craft := CraftingRegistry.can_craft(player, recipe)
+		var can_craft := CraftingRegistry.can_craft(inventory, station_access, recipe)
 		crafting_buttons[i].disabled = not can_craft
 		crafting_buttons[i].modulate = Color.WHITE if can_craft else Color(1, 1, 1, 0.35)
 
 
 func craft_recipe(recipe_index: int) -> void:
-	if player == null:
+	if inventory == null or station_access == null:
 		return
 	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
-	CraftingRegistry.craft(player,recipe)
+	CraftingRegistry.craft(inventory, station_access, recipe)
 	update_crafting_buttons()
 
 
@@ -91,10 +91,10 @@ func get_item_texture(item_id: int) -> Texture2D:
 
 
 func craft_max(recipe_index: int) -> void:
-	if player == null:
+	if inventory == null or station_access == null:
 		return
 	var recipe: Dictionary = CraftingRegistry.RECIPES[recipe_index]
-	while CraftingRegistry.craft(player,recipe):
+	while CraftingRegistry.craft(inventory, station_access, recipe):
 		pass
 	update_crafting_buttons()
 

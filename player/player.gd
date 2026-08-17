@@ -1,8 +1,6 @@
 class_name Player
 extends CharacterBody3D
 
-signal crafting_stations_changed
-
 @export var speed: float = 5.0
 @export var jump_velocity: float = 7.0
 @export var mouse_sensitivity: float = 0.002
@@ -58,7 +56,6 @@ func setup_components() -> void:
 	station_detector.name = "StationDetector"
 	add_child(station_detector)
 	station_detector.setup(self, world, crafting_station_radius, station_check_interval)
-	station_detector.stations_changed.connect(_on_crafting_stations_changed)
 
 func _unhandled_input(event: InputEvent) -> void:
 	hotbar_controller.handle_input(event)
@@ -119,9 +116,3 @@ func set_flying(enabled: bool) -> void:
 
 func collect_item(item_id: int, amount: int) -> int:
 	return inventory.add_item(item_id, amount)
-
-func has_nearby_station(station: int) -> bool:
-	return station_detector.has_nearby_station(station)
-
-func _on_crafting_stations_changed() -> void:
-	crafting_stations_changed.emit()

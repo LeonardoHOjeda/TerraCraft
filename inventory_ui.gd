@@ -37,7 +37,7 @@ func _ready() -> void:
 	hotbar_grid.add_theme_constant_override("h_separation", 4)
 
 	create_slots()
-	crafting_panel.setup(inventory, player, atlas)
+	crafting_panel.setup(inventory, player.station_detector, atlas)
 
 	if player:
 		inventory.slot_changed.connect(update_slot)
