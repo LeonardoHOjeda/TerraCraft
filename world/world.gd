@@ -12,6 +12,7 @@ const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 @export var log_chunk_timings: bool = true
 @export_range(1, 100, 1) var timing_samples_to_log: int = 12
 @export var log_neighbor_rebuild_timings: bool = false
+@export var log_gameplay_rebuild_timings: bool = false
 
 @export var seed: int = 12345
 @export var terrain_frequency: float = 0.025
@@ -52,6 +53,7 @@ var chunk_versions: Dictionary = {}
 var version_counters: Dictionary = {}
 var pending_mesh_data: Dictionary = {}
 var active_jobs: Array[Dictionary] = []
+var gameplay_rebuilds: Dictionary = {}
 var timing_samples_logged: int = 0
 var current_player_chunk := INVALID_CHUNK_POSITION
 var player: Node3D
@@ -236,6 +238,10 @@ func pop_work_for_stages(stages: Array) -> Vector2i:
 func sort_work_queue() -> void:
 	work_queue.sort_custom(
 		func(a: Vector2i, b: Vector2i) -> bool:
+			var a_is_gameplay := gameplay_rebuilds.has(a)
+			var b_is_gameplay := gameplay_rebuilds.has(b)
+			if a_is_gameplay != b_is_gameplay:
+				return a_is_gameplay
 			var a_distance := distance_squared(a, current_player_chunk)
 			var b_distance := distance_squared(b, current_player_chunk)
 			if a_distance == b_distance:
@@ -368,8 +374,27 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 			print_chunk_timing(chunk_position, false)
 			timing_samples_logged += 1
 		request_cardinal_neighbor_rebuilds(chunk_position)
+	elif gameplay_rebuilds.has(chunk_position):
+		gameplay_rebuilds.erase(chunk_position)
+		if log_gameplay_rebuild_timings:
+			print_gameplay_rebuild_timing(chunk_position)
 	elif log_neighbor_rebuild_timings:
 		print_chunk_timing(chunk_position, true)
+
+
+func print_gameplay_rebuild_timing(chunk_position: Vector2i) -> void:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	print(
+		"Gameplay rebuild (%d,%d): snapshot main %.2f ms | mesh-data worker %.2f ms | apply mesh main %.2f ms | collision main %.2f ms"
+		% [
+			chunk_position.x,
+			chunk_position.y,
+			float(timing.get("snapshot_usec", 0)) / 1000.0,
+			float(timing.get("mesh_worker_usec", 0)) / 1000.0,
+			float(timing.get("apply_mesh_usec", 0)) / 1000.0,
+			float(timing.get("collision_usec", 0)) / 1000.0,
+		]
+	)
 
 
 func print_chunk_timing(chunk_position: Vector2i, is_rebuild: bool) -> void:
@@ -414,6 +439,7 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 	chunk_versions.erase(chunk_position)
 	pending_mesh_data.erase(chunk_position)
 	queued_work.erase(chunk_position)
+	gameplay_rebuilds.erase(chunk_position)
 	request_cardinal_neighbor_rebuilds(chunk_position)
 
 
@@ -422,9 +448,11 @@ func request_cardinal_neighbor_rebuilds(chunk_position: Vector2i) -> void:
 		request_chunk_rebuild(chunk_position + offset)
 
 
-func request_chunk_rebuild(chunk_position: Vector2i) -> void:
+func request_chunk_rebuild(chunk_position: Vector2i, gameplay_priority: bool = false) -> void:
 	if not loaded_chunks.has(chunk_position):
 		return
+	if gameplay_priority:
+		gameplay_rebuilds[chunk_position] = true
 	var stage: int = chunk_stages.get(chunk_position, ChunkStage.READY)
 	if stage == ChunkStage.GENERATE_DATA or stage == ChunkStage.GENERATING:
 		return
@@ -612,24 +640,10 @@ func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
 
 
 func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
-	prepare_for_synchronous_rebuild(chunk.chunk_position)
-	chunk.rebuild_representation()
+	request_chunk_rebuild(chunk.chunk_position, true)
 	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
-		rebuild_chunk_at(neighbor_position)
+		request_chunk_rebuild(neighbor_position, true)
 
 
 func rebuild_chunk_at(chunk_position: Vector2i) -> void:
-	var chunk := loaded_chunks.get(chunk_position) as Chunk
-	if chunk != null:
-		prepare_for_synchronous_rebuild(chunk_position)
-		chunk.rebuild_representation()
-
-
-func prepare_for_synchronous_rebuild(chunk_position: Vector2i) -> void:
-	var next_version := int(version_counters.get(chunk_position, 0)) + 1
-	version_counters[chunk_position] = next_version
-	chunk_versions[chunk_position] = next_version
-	chunk_stages[chunk_position] = ChunkStage.READY
-	pending_mesh_data.erase(chunk_position)
-	queued_work.erase(chunk_position)
-	work_queue.erase(chunk_position)
+	request_chunk_rebuild(chunk_position, true)

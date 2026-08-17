@@ -13,6 +13,7 @@
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
 player_path = NodePath("../Player")
+log_gameplay_rebuild_timings = true
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
