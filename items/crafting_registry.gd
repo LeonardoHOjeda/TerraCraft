@@ -67,7 +67,7 @@ const RECIPES := [
   },
   {
     "name": "Pico de hierro",
-    "output_item": ItemRegistry.Item.STONE_PICKAXE,
+    "output_item": ItemRegistry.Item.IRON_PICKAXE,
     "output_amount": 1,
     "station": Station.WORKBENCH,
     "ingredients": {

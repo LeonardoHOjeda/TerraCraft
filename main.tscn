@@ -2,7 +2,6 @@
 
 [ext_resource type="PackedScene" uid="uid://7o6oqd6peqhl" path="res://player/player.tscn" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://ceiwl42aeeftp" path="res://hotbar.gd" id="3_h2yge"]
-[ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/Atlas.png" id="4_1bvp3"]
 [ext_resource type="PackedScene" uid="uid://bx8g1e51p5xwl" path="res://world/world.tscn" id="4_lquwl"]
 [ext_resource type="Script" uid="uid://cxoxcscd60dt8" path="res://biome_debug.gd" id="5_lquwl"]
 [ext_resource type="Script" uid="uid://bkhfw1rvpglw0" path="res://debug_panel.gd" id="6_7mycd"]
@@ -36,7 +35,7 @@ grow_horizontal = 2
 grow_vertical = 0
 theme_override_constants/separation = 4
 script = ExtResource("3_h2yge")
-atlas = ExtResource("4_1bvp3")
+atlas = ExtResource("8_5vw27")
 player = NodePath("../../Player")
 selected_item_label = NodePath("../SelectedItemName")
 
