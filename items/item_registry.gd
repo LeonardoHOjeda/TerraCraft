@@ -40,7 +40,10 @@ enum Item {
 
 	WOODEN_PICKAXE,
 	STONE_PICKAXE,
-	IRON_PICKAXE
+	IRON_PICKAXE,
+	WOODEN_AXE,
+	STONE_AXE,
+	IRON_AXE
 }
 
 
@@ -130,6 +133,14 @@ static func get_texture_position(item: int) -> Vector2i:
 			return Vector2i(9,1)
 		Item.STONE_PICKAXE:
 			return Vector2i(10,1)
+		Item.IRON_PICKAXE:
+			return Vector2i(11,1)
+		Item.WOODEN_AXE:
+			return Vector2i(9,1)
+		Item.STONE_AXE:
+			return Vector2i(10,1)
+		Item.IRON_AXE:
+			return Vector2i(11,1)
 		Item.IRON_INGOT:
 			return BlockRegistry.TEXTURE_IRON_INGOT
 
@@ -170,6 +181,12 @@ static func get_max_stack(item_id: int) -> int:
 		Item.STONE_PICKAXE:
 			return 1
 		Item.IRON_PICKAXE:
+			return 1
+		Item.WOODEN_AXE:
+			return 1
+		Item.STONE_AXE:
+			return 1
+		Item.IRON_AXE:
 			return 1
 
 	return 64
@@ -225,6 +242,12 @@ static func get_item_name(item_id: int) -> String:
 			return "Pico de piedra"
 		Item.IRON_PICKAXE:
 			return "Pico de hierro"
+		Item.WOODEN_AXE:
+			return "Hacha de madera"
+		Item.STONE_AXE:
+			return "Hacha de piedra"
+		Item.IRON_AXE:
+			return "Hacha de hierro"
 
 	return ""
 
@@ -236,6 +259,12 @@ static func get_tool_type(item_id: int) -> ToolType:
 			return ToolType.PICKAXE
 		Item.IRON_PICKAXE:
 			return ToolType.PICKAXE
+		Item.WOODEN_AXE:
+			return ToolType.AXE
+		Item.STONE_AXE:
+			return ToolType.AXE
+		Item.IRON_AXE:
+			return ToolType.AXE
 
 	return ToolType.NONE
 
@@ -248,6 +277,12 @@ static func get_mining_speed(item_id: int) -> float:
 			return 4.0
 		Item.IRON_PICKAXE:
 			return 6.0
+		Item.WOODEN_AXE:
+			return 2.5
+		Item.STONE_AXE:
+			return 4.0
+		Item.IRON_AXE:
+			return 6.0
 
 	return 1.0
 
@@ -259,6 +294,12 @@ static func get_mining_tier(item_id: int) -> int:
 		Item.STONE_PICKAXE:
 			return 2
 		Item.IRON_PICKAXE:
+			return 3
+		Item.WOODEN_AXE:
+			return 1
+		Item.STONE_AXE:
+			return 2
+		Item.IRON_AXE:
 			return 3
 
 	return 0

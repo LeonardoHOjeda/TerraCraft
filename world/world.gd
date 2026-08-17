@@ -2,6 +2,15 @@ class_name World
 extends Node3D
 
 const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
+const MAX_TREE_LOGS := 64
+const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
+	Vector3i.UP,
+	Vector3i.DOWN,
+	Vector3i.LEFT,
+	Vector3i.RIGHT,
+	Vector3i.FORWARD,
+	Vector3i.BACK,
+]
 
 @export var chunk_scene: PackedScene
 @export_node_path("Node3D") var player_path: NodePath
@@ -17,6 +26,7 @@ const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 @export var log_gameplay_collision_stats: bool = false
 @export var log_chunk_override_application: bool = false
 @export var log_collision_section_timings: bool = false
+@export var log_tree_felling: bool = false
 
 @export var seed: int = 12345
 @export var terrain_frequency: float = 0.025
@@ -708,6 +718,80 @@ func get_procedural_surface_y(world_x: int, world_z: int) -> int:
 	var continental := continental_noise.get_noise_2d(world_x, world_z)
 	var detail := detail_noise.get_noise_2d(world_x, world_z)
 	return clampi(base_height + roundi(continental * terrain_height + detail * 4.0), 1, Chunk.HEIGHT - 1)
+
+
+func is_procedural_tree_log(position: Vector3i) -> bool:
+	if not should_generate_tree(position.x, position.z):
+		return false
+	var trunk_base_y := get_procedural_surface_y(position.x, position.z) + 1
+	return position.y >= trunk_base_y and position.y < trunk_base_y + 4
+
+
+func fell_tree(start_position: Vector3i) -> bool:
+	if get_block_at_world_position(start_position) != BlockRegistry.Block.WOOD:
+		return false
+	if not is_procedural_tree_log(start_position):
+		return false
+
+	var logs: Array[Vector3i] = []
+	var frontier: Array[Vector3i] = [start_position]
+	var visited: Dictionary = {start_position: true}
+	while not frontier.is_empty() and logs.size() < MAX_TREE_LOGS:
+		var position: Vector3i = frontier.pop_front()
+		if (
+			get_block_at_world_position(position) != BlockRegistry.Block.WOOD
+			or not is_procedural_tree_log(position)
+		):
+			continue
+		logs.append(position)
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor := position + direction
+			if not visited.has(neighbor):
+				visited[neighbor] = true
+				frontier.append(neighbor)
+
+	if logs.is_empty():
+		return false
+
+	var rebuild_sections: Dictionary = {}
+	var modified_chunks: Dictionary = {}
+	for position in logs:
+		var chunk := get_chunk_at_world_position(position)
+		if chunk == null:
+			continue
+		var local_position := chunk.world_to_local(position)
+		var broken_block := chunk.remove_block_local(local_position)
+		if broken_block != BlockRegistry.Block.WOOD:
+			continue
+		record_block_override(chunk, local_position)
+		modified_chunks[chunk.chunk_position] = true
+		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position.y)
+		for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
+			add_tree_rebuild_target(rebuild_sections, neighbor_position, local_position.y)
+		var dropped_item := ItemRegistry.get_drop(broken_block)
+		if dropped_item != ItemRegistry.Item.NONE:
+			var drop_offset := Vector3(randf_range(-0.18, 0.18), 0.5, randf_range(-0.18, 0.18))
+			spawn_item(dropped_item, Vector3(position) + Vector3(0.5, 0.0, 0.5) + drop_offset)
+
+	for chunk_position in rebuild_sections:
+		var sections: Array[int] = []
+		for section in rebuild_sections[chunk_position]:
+			sections.append(section)
+		sections.sort()
+		request_chunk_rebuild(chunk_position, true, sections)
+
+	if log_tree_felling:
+		print("Tree felled: %d logs across %d chunks" % [logs.size(), modified_chunks.size()])
+	return true
+
+
+func add_tree_rebuild_target(targets: Dictionary, chunk_position: Vector2i, local_y: int) -> void:
+	if not loaded_chunks.has(chunk_position):
+		return
+	var sections: Dictionary = targets.get(chunk_position, {})
+	for section in get_affected_collision_sections(local_y):
+		sections[section] = true
+	targets[chunk_position] = sections
 
 
 func apply_trees_to_chunk(chunk: Chunk) -> void:

@@ -76,6 +76,36 @@ const RECIPES := [
     }
   },
   {
+    "name": "Hacha de madera",
+    "output_item": ItemRegistry.Item.WOODEN_AXE,
+    "output_amount": 1,
+    "station": Station.WORKBENCH,
+    "ingredients": {
+      ItemRegistry.Item.WOOD_PLANKS: 3,
+      ItemRegistry.Item.STICK: 2
+    }
+  },
+  {
+    "name": "Hacha de piedra",
+    "output_item": ItemRegistry.Item.STONE_AXE,
+    "output_amount": 1,
+    "station": Station.WORKBENCH,
+    "ingredients": {
+      ItemRegistry.Item.STONE: 3,
+      ItemRegistry.Item.STICK: 2
+    }
+  },
+  {
+    "name": "Hacha de hierro",
+    "output_item": ItemRegistry.Item.IRON_AXE,
+    "output_amount": 1,
+    "station": Station.WORKBENCH,
+    "ingredients": {
+      ItemRegistry.Item.IRON_INGOT: 3,
+      ItemRegistry.Item.STICK: 2
+    }
+  },
+  {
     "name": "Lingote de hierro",
     "output_item": ItemRegistry.Item.IRON_INGOT,
     "output_amount": 1,

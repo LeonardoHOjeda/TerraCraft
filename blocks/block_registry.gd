@@ -79,6 +79,9 @@ static func get_preferred_tool(block: int) -> ItemRegistry.ToolType:
 		Block.PLATINUM:
 			return ItemRegistry.ToolType.PICKAXE
 
+		Block.WOOD:
+			return ItemRegistry.ToolType.AXE
+
 	return ItemRegistry.ToolType.NONE
 
 

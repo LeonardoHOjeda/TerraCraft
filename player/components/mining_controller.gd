@@ -64,6 +64,15 @@ func break_target_block(target) -> void:
 	var chunk: Chunk = target.chunk
 	var block_position: Vector3i = target.block_position
 	var local_position: Vector3i = target.local_position
+	var selected_item := ItemRegistry.Item.NONE
+	if hotbar_controller != null:
+		selected_item = hotbar_controller.get_selected_item()
+	if (
+		target.chunk.get_block_local(local_position) == BlockRegistry.Block.WOOD
+		and ItemRegistry.get_tool_type(selected_item) == ItemRegistry.ToolType.AXE
+		and world.fell_tree(block_position)
+	):
+		return
 	var broken_block := chunk.remove_block_local(local_position)
 	if broken_block == BlockRegistry.Block.AIR:
 		return
