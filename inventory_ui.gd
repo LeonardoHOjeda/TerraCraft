@@ -13,6 +13,7 @@ var inventory_interaction := InventoryInteractionController.new()
 @onready var inventory_grid: GridContainer = $HBoxContainer/InventorySection/InventoryGrid
 @onready var hotbar_grid: GridContainer = $HBoxContainer/InventorySection/HotbarGrid
 @onready var crafting_panel: CraftingPanel = $HBoxContainer/CraftingSection/CraftingScroll/CraftingGrid
+@onready var crafting_empty_label: Label = $HBoxContainer/CraftingSection/CraftingEmptyLabel
 
 @onready var cursor_icon: TextureRect = $CursorItem
 @onready var cursor_label: Label = $CursorItem/Amount
@@ -25,6 +26,7 @@ var slot_buttons: Array[Button] = []
 
 func _ready() -> void:
 	visible = false
+	apply_inventory_styles()
 
 	if player:
 		inventory = player.inventory
@@ -37,12 +39,36 @@ func _ready() -> void:
 	hotbar_grid.add_theme_constant_override("h_separation", 4)
 
 	create_slots()
-	crafting_panel.setup(inventory, player.station_detector, atlas)
+	crafting_panel.setup(inventory, player.station_detector, atlas, crafting_empty_label)
 
 	if player:
 		inventory.slot_changed.connect(update_slot)
 
 	update_all_slots()
+
+
+func apply_inventory_styles() -> void:
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.055, 0.065, 0.085, 0.97)
+	panel_style.border_color = Color(0.30, 0.36, 0.46, 0.95)
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(10)
+	panel_style.content_margin_left = 18
+	panel_style.content_margin_top = 16
+	panel_style.content_margin_right = 18
+	panel_style.content_margin_bottom = 16
+	add_theme_stylebox_override("panel", panel_style)
+
+	$HBoxContainer.add_theme_constant_override("separation", 18)
+	$HBoxContainer/InventorySection.add_theme_constant_override("separation", 7)
+	$HBoxContainer/CraftingSection.add_theme_constant_override("separation", 7)
+
+	var scroll_style := StyleBoxFlat.new()
+	scroll_style.bg_color = Color(0.035, 0.042, 0.055, 0.8)
+	scroll_style.border_color = Color(0.20, 0.25, 0.33, 0.9)
+	scroll_style.set_border_width_all(1)
+	scroll_style.set_corner_radius_all(6)
+	$HBoxContainer/CraftingSection/CraftingScroll.add_theme_stylebox_override("panel", scroll_style)
 
 
 func _process(_delta: float) -> void:
@@ -69,14 +95,15 @@ func create_slot(index: int) -> PanelContainer:
 	slot.custom_minimum_size = Vector2(SLOT_SIZE, SLOT_SIZE)
 
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.12, 0.12, 0.12, 0.9)
+	style.bg_color = Color(0.10, 0.12, 0.16, 0.96)
 
 	style.border_width_left = 2
 	style.border_width_top = 2
 	style.border_width_right = 2
 	style.border_width_bottom = 2
 
-	style.border_color = Color(0.4, 0.4, 0.4)
+	style.border_color = Color(0.27, 0.32, 0.41)
+	style.set_corner_radius_all(5)
 
 	slot.add_theme_stylebox_override("panel", style)
 
@@ -251,9 +278,9 @@ func set_slot_hover(slot: PanelContainer, hovered: bool) -> void:
 	var style := StyleBoxFlat.new()
 
 	style.bg_color = (
-		Color(0.20, 0.20, 0.20, 0.95)
+		Color(0.18, 0.22, 0.29, 1.0)
 		if hovered
-		else Color(0.12, 0.12, 0.12, 0.9)
+		else Color(0.10, 0.12, 0.16, 0.96)
 	)
 
 	style.border_width_left = 2
@@ -262,9 +289,10 @@ func set_slot_hover(slot: PanelContainer, hovered: bool) -> void:
 	style.border_width_bottom = 2
 
 	style.border_color = (
-		Color(0.75, 0.75, 0.75)
+		Color(0.72, 0.82, 1.0)
 		if hovered
-		else Color(0.4, 0.4, 0.4)
+		else Color(0.27, 0.32, 0.41)
 	)
+	style.set_corner_radius_all(5)
 
 	slot.add_theme_stylebox_override("panel", style)
