@@ -64,7 +64,7 @@ func break_target_block(target) -> void:
 	var chunk: Chunk = target.chunk
 	var block_position: Vector3i = target.block_position
 	var local_position: Vector3i = target.local_position
-	var broken_block := chunk.remove_block(local_position)
+	var broken_block := chunk.remove_block_local(local_position)
 	if broken_block == BlockRegistry.Block.AIR:
 		return
 	world.rebuild_chunk_and_neighbors(chunk, local_position)

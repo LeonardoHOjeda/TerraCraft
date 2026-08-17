@@ -43,6 +43,64 @@ const DIRECTIONS := [
 ]
 
 
+static func from_collider(collider: Object) -> Chunk:
+	if collider != null and collider.has_meta("chunk"):
+		return collider.get_meta("chunk") as Chunk
+	return null
+
+
+func is_valid_local_position(local_position: Vector3i) -> bool:
+	return (
+		local_position.x >= 0
+		and local_position.y >= 0
+		and local_position.z >= 0
+		and local_position.x < SIZE_XZ
+		and local_position.y < HEIGHT
+		and local_position.z < SIZE_XZ
+	)
+
+
+func world_to_local(world_position: Vector3i) -> Vector3i:
+	return world_position - Vector3i(global_position)
+
+
+func local_to_world(local_position: Vector3i) -> Vector3i:
+	return Vector3i(global_position) + local_position
+
+
+func get_block_local(local_position: Vector3i) -> int:
+	return get_block(local_position)
+
+
+func remove_block_local(local_position: Vector3i) -> int:
+	return remove_block(local_position)
+
+
+func place_block_local(local_position: Vector3i, block: int) -> bool:
+	return place_block(local_position, block)
+
+
+func set_block_local_if_empty(local_position: Vector3i, block: int) -> bool:
+	return set_block_without_rebuild(local_position, block)
+
+
+func rebuild_representation() -> void:
+	rebuild_mesh()
+
+
+func get_affected_neighbor_positions(local_position: Vector3i) -> Array[Vector2i]:
+	var neighbors: Array[Vector2i] = []
+	if local_position.x == 0:
+		neighbors.append(chunk_position + Vector2i(-1, 0))
+	elif local_position.x == SIZE_XZ - 1:
+		neighbors.append(chunk_position + Vector2i(1, 0))
+	if local_position.z == 0:
+		neighbors.append(chunk_position + Vector2i(0, -1))
+	elif local_position.z == SIZE_XZ - 1:
+		neighbors.append(chunk_position + Vector2i(0, 1))
+	return neighbors
+
+
 func initialize(
 	new_world: World,
 	new_chunk_position: Vector2i,
@@ -439,10 +497,6 @@ func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
 
 	blocks[position.x][position.y][position.z] = block
 	return true
-
-func get_block_local(position: Vector3i) -> int:
-	return get_block(position)
-
 
 func get_neighbor_block(local_position: Vector3i) -> int:
 	if (

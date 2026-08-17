@@ -36,8 +36,8 @@ func place_block() -> void:
 	var target_chunk := world.get_chunk_at_world_position(block_position)
 	if target_chunk == null:
 		return
-	var local_position := block_position - Vector3i(target_chunk.global_position)
-	if target_chunk.place_block(local_position, selected_block):
+	var local_position := target_chunk.world_to_local(block_position)
+	if target_chunk.place_block_local(local_position, selected_block):
 		world.rebuild_chunk_and_neighbors(target_chunk, local_position)
 		hotbar_controller.consume_selected_item(1)
 

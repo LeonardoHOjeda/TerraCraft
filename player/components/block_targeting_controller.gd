@@ -39,7 +39,7 @@ func update_target() -> void:
 
 	var hit_position: Vector3 = result.position
 	var hit_normal: Vector3 = result.normal
-	var chunk := get_chunk_from_collider(result.collider)
+	var chunk := Chunk.from_collider(result.collider)
 	var block_position := Vector3i(
 		floor(hit_position.x - hit_normal.x * 0.01),
 		floor(hit_position.y - hit_normal.y * 0.01),
@@ -58,10 +58,4 @@ func update_target() -> void:
 	current_target.hit_normal = hit_normal
 	current_target.adjacent_block_position = adjacent_position
 	if chunk != null:
-		current_target.local_position = block_position - Vector3i(chunk.global_position)
-
-
-func get_chunk_from_collider(collider: Object) -> Chunk:
-	if collider != null and collider.has_meta("chunk"):
-		return collider.get_meta("chunk") as Chunk
-	return null
+		current_target.local_position = chunk.world_to_local(block_position)

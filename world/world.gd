@@ -131,7 +131,7 @@ func get_block_at_world_position(position: Vector3i) -> int:
 	if chunk == null:
 		return BlockRegistry.Block.AIR
 
-	var local_position := position - Vector3i(chunk.global_position)
+	var local_position := chunk.world_to_local(position)
 
 	return chunk.get_block_local(local_position)
 
@@ -141,9 +141,9 @@ func set_block_at_world_position(position: Vector3i, block: int, affected_chunks
 	if chunk == null:
 		return
 
-	var local_position := position - Vector3i(chunk.global_position)
+	var local_position := chunk.world_to_local(position)
 
-	if chunk.set_block_without_rebuild(local_position, block):
+	if chunk.set_block_local_if_empty(local_position, block):
 		affected_chunks[chunk] = true
 
 func get_surface_y(world_x: int, world_z: int) -> int:
@@ -268,7 +268,7 @@ func create_world_tree(
 func rebuild_all_chunks() -> void:
 	for child in get_children():
 		if child is Chunk:
-			child.rebuild_mesh()
+			child.rebuild_representation()
 
 
 func setup_ore_noise(noise: FastNoiseLite, noise_seed: int, frequency: float) -> void:
@@ -299,19 +299,10 @@ func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
 	dropped_item.global_position = position
 
 func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
-	chunk.rebuild_mesh()
+	chunk.rebuild_representation()
 
-	if local_position.x == 0:
-		rebuild_chunk_at(chunk.chunk_position + Vector2i(-1, 0))
-
-	elif local_position.x == Chunk.SIZE_XZ - 1:
-		rebuild_chunk_at(chunk.chunk_position + Vector2i(1, 0))
-
-	if local_position.z == 0:
-		rebuild_chunk_at(chunk.chunk_position + Vector2i(0, -1))
-
-	elif local_position.z == Chunk.SIZE_XZ - 1:
-		rebuild_chunk_at(chunk.chunk_position + Vector2i(0, 1))
+	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
+		rebuild_chunk_at(neighbor_position)
 
 func rebuild_chunk_at(chunk_position: Vector2i) -> void:
 	var chunk_name := "Chunk_%d_%d" % [chunk_position.x, chunk_position.y]
@@ -319,4 +310,4 @@ func rebuild_chunk_at(chunk_position: Vector2i) -> void:
 	var chunk := get_node_or_null(chunk_name) as Chunk
 
 	if chunk:
-		chunk.rebuild_mesh()
+		chunk.rebuild_representation()
