@@ -27,6 +27,7 @@ var block_placement_controller: BlockPlacementController
 var station_detector: StationDetector
 var hotbar_controller: HotbarController
 var interaction_state: PlayerInteractionState
+var targeting_controller: BlockTargetingController
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -41,14 +42,18 @@ func setup_components() -> void:
 	hotbar_controller.name = "HotbarController"
 	add_child(hotbar_controller)
 	hotbar_controller.setup(inventory)
+	targeting_controller = BlockTargetingController.new()
+	targeting_controller.name = "BlockTargetingController"
+	add_child(targeting_controller)
+	targeting_controller.setup(self, camera, interaction_distance)
 	mining_controller = MiningController.new()
 	mining_controller.name = "MiningController"
 	add_child(mining_controller)
-	mining_controller.setup(self, camera, world, hotbar_controller, interaction_state, mining_cracks, interaction_distance, cracks_texture)
+	mining_controller.setup(world, hotbar_controller, interaction_state, targeting_controller, mining_cracks, cracks_texture)
 	block_placement_controller = BlockPlacementController.new()
 	block_placement_controller.name = "BlockPlacementController"
 	add_child(block_placement_controller)
-	block_placement_controller.setup(self, camera, world, hotbar_controller, interaction_state, interaction_distance, place_cooldown)
+	block_placement_controller.setup(self, world, hotbar_controller, interaction_state, targeting_controller, place_cooldown)
 	station_detector = StationDetector.new()
 	station_detector.name = "StationDetector"
 	add_child(station_detector)
@@ -67,6 +72,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _physics_process(delta: float) -> void:
+	targeting_controller.update_target()
 	mining_controller.process(delta)
 	block_placement_controller.process(delta)
 	station_detector.process(delta)
@@ -99,20 +105,11 @@ func _physics_process(delta: float) -> void:
 	update_block_highlight()
 
 func update_block_highlight() -> void:
-	var from := camera.global_position
-	var to := from + -camera.global_transform.basis.z * interaction_distance
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	query.collision_mask = 1
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
-	if result.is_empty():
+	var target := targeting_controller.current_target
+	if not target.is_valid:
 		block_highlight.visible = false
 		return
-	var hit_position: Vector3 = result.position
-	var hit_normal: Vector3 = result.normal
-	var block_position := Vector3i(floor(hit_position.x - hit_normal.x * 0.01), floor(hit_position.y - hit_normal.y * 0.01), floor(hit_position.z - hit_normal.z * 0.01))
-	block_highlight.global_position = Vector3(block_position) + Vector3(0.5, 0.5, 0.5)
+	block_highlight.global_position = Vector3(target.block_position) + Vector3(0.5, 0.5, 0.5)
 	block_highlight.visible = true
 
 func set_flying(enabled: bool) -> void:

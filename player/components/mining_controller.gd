@@ -1,26 +1,22 @@
 class_name MiningController
 extends Node
 
-var player: Player
-var camera: Camera3D
 var world: World
 var hotbar_controller: HotbarController
 var interaction_state: PlayerInteractionState
+var targeting_controller: BlockTargetingController
 var mining_cracks: MeshInstance3D
-var interaction_distance: float
 var cracks_texture: Texture2D
 var mining_progress := 0.0
 var mining_block_position: Vector3i
 var is_mining := false
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, cracks: MeshInstance3D, distance: float, texture: Texture2D) -> void:
-	player = new_player
-	camera = new_camera
+func setup(new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, new_targeting_controller: BlockTargetingController, cracks: MeshInstance3D, texture: Texture2D) -> void:
 	world = new_world
 	hotbar_controller = new_hotbar_controller
 	interaction_state = new_interaction_state
+	targeting_controller = new_targeting_controller
 	mining_cracks = cracks
-	interaction_distance = distance
 	cracks_texture = texture
 	mining_cracks.visible = false
 	build_mining_cracks_mesh()
@@ -32,12 +28,12 @@ func process(delta: float) -> void:
 		reset_mining()
 
 func process_mining(delta: float) -> void:
-	var target := get_target_block()
-	if target.is_empty():
+	var target := targeting_controller.current_target
+	if not target.is_valid or target.chunk == null:
 		reset_mining()
 		return
-	var block_position: Vector3i = target["position"]
-	var block: int = target["block"]
+	var block_position: Vector3i = target.block_position
+	var block: int = target.chunk.get_block_local(target.local_position)
 	if block == BlockRegistry.Block.AIR or block == BlockRegistry.Block.BEDROCK or not can_mine_block(block):
 		reset_mining()
 		return
@@ -64,34 +60,10 @@ func get_mining_speed_for_block(block: int) -> float:
 		return 0.35
 	return ItemRegistry.get_mining_speed(selected_item)
 
-func get_target_block() -> Dictionary:
-	var from := camera.global_position
-	var to := from + -camera.global_transform.basis.z * interaction_distance
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	query.collision_mask = 1
-	var result := player.get_world_3d().direct_space_state.intersect_ray(query)
-	if result.is_empty():
-		return {}
-	var hit_position: Vector3 = result.position
-	var hit_normal: Vector3 = result.normal
-	var block_position := Vector3i(floor(hit_position.x - hit_normal.x * 0.01), floor(hit_position.y - hit_normal.y * 0.01), floor(hit_position.z - hit_normal.z * 0.01))
-	var chunk := get_chunk_from_hit(result.collider)
-	if chunk == null:
-		return {}
-	var local_position := block_position - Vector3i(chunk.global_position)
-	return {"position": block_position, "local_position": local_position, "chunk": chunk, "block": chunk.get_block_local(local_position)}
-
-func get_chunk_from_hit(collider: Object) -> Chunk:
-	if collider != null and collider.has_meta("chunk"):
-		return collider.get_meta("chunk") as Chunk
-	return null
-
-func break_target_block(target: Dictionary) -> void:
-	var chunk: Chunk = target["chunk"]
-	var block_position: Vector3i = target["position"]
-	var local_position: Vector3i = target["local_position"]
+func break_target_block(target) -> void:
+	var chunk: Chunk = target.chunk
+	var block_position: Vector3i = target.block_position
+	var local_position: Vector3i = target.local_position
 	var broken_block := chunk.remove_block(local_position)
 	if broken_block == BlockRegistry.Block.AIR:
 		return

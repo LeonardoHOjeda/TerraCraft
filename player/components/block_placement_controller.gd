@@ -2,21 +2,19 @@ class_name BlockPlacementController
 extends Node
 
 var player: Player
-var camera: Camera3D
 var world: World
 var hotbar_controller: HotbarController
 var interaction_state: PlayerInteractionState
-var interaction_distance: float
+var targeting_controller: BlockTargetingController
 var place_cooldown: float
 var place_timer := 0.0
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, distance: float, cooldown: float) -> void:
+func setup(new_player: Player, new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, new_targeting_controller: BlockTargetingController, cooldown: float) -> void:
 	player = new_player
-	camera = new_camera
 	world = new_world
 	hotbar_controller = new_hotbar_controller
 	interaction_state = new_interaction_state
-	interaction_distance = distance
+	targeting_controller = new_targeting_controller
 	place_cooldown = cooldown
 
 func process(delta: float) -> void:
@@ -26,18 +24,10 @@ func process(delta: float) -> void:
 		place_timer = place_cooldown
 
 func place_block() -> void:
-	var from := camera.global_position
-	var to := from + -camera.global_transform.basis.z * interaction_distance
-	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
-	query.collide_with_bodies = true
-	query.collision_mask = 1
-	var result := player.get_world_3d().direct_space_state.intersect_ray(query)
-	if result.is_empty():
+	var target := targeting_controller.current_target
+	if not target.is_valid:
 		return
-	var hit_position: Vector3 = result.position
-	var hit_normal: Vector3 = result.normal
-	var block_position := Vector3i(floor(hit_position.x + hit_normal.x * 0.01), floor(hit_position.y + hit_normal.y * 0.01), floor(hit_position.z + hit_normal.z * 0.01))
+	var block_position: Vector3i = target.adjacent_block_position
 	if is_block_inside_player(block_position) or world == null or hotbar_controller == null:
 		return
 	var selected_block: int = hotbar_controller.get_selected_block()
