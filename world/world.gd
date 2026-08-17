@@ -19,6 +19,7 @@ const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 @export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
 @export_range(1, 8, 1) var max_background_jobs: int = 2
 @export var log_chunk_timings: bool = true
+@export var log_chunk_load_profile: bool = false
 @export_range(1, 100, 1) var timing_samples_to_log: int = 12
 @export var log_neighbor_rebuild_timings: bool = false
 @export var log_gameplay_rebuild_timings: bool = false
@@ -67,6 +68,7 @@ var chunk_versions: Dictionary = {}
 var version_counters: Dictionary = {}
 var pending_mesh_data: Dictionary = {}
 var active_jobs: Array[Dictionary] = []
+var pending_generation_results: Array[Dictionary] = []
 var gameplay_rebuilds: Dictionary = {}
 var gameplay_collision_deadlines: Dictionary = {}
 var gameplay_change_counts: Dictionary = {}
@@ -79,6 +81,9 @@ var timing_samples_logged: int = 0
 var block_light_update_count: int = 0
 var block_light_last_update_usec: int = 0
 var block_light_last_changed_chunks: int = 0
+var mesh_last_worker_usec: int = 0
+var mesh_last_apply_usec: int = 0
+var mesh_last_face_count: int = 0
 var current_player_chunk := INVALID_CHUNK_POSITION
 var player: Node3D
 
@@ -113,6 +118,7 @@ func _process(_delta: float) -> void:
 		update_streaming_targets()
 
 	collect_finished_jobs()
+	process_one_pending_generation_result()
 	start_background_jobs()
 	enqueue_due_gameplay_collisions()
 	process_main_thread_queue()
@@ -151,6 +157,21 @@ func update_streaming_targets() -> void:
 				"snapshot_usec": 0,
 				"apply_mesh_usec": 0,
 				"collision_usec": 0,
+				"collision_sections_usec": {},
+				"collision_section_frames": {},
+				"apply_data_main_usec": 0,
+				"special_blocks_main_usec": 0,
+				"special_blocks_created": 0,
+				"blocklight_clear_usec": 0,
+				"blocklight_source_scan_usec": 0,
+				"blocklight_border_reconcile_usec": 0,
+				"blocklight_bfs_usec": 0,
+				"blocklight_init_usec": 0,
+				"blocklight_changed_neighbor_chunks": 0,
+				"blocklight_neighbor_remesh_requests": 0,
+				"snapshot_data_copy_usec": 0,
+				"snapshot_block_borders_usec": 0,
+				"snapshot_light_borders_usec": 0,
 			}
 			enqueue_work(chunk_position)
 
@@ -224,12 +245,41 @@ func collect_finished_jobs() -> void:
 		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
 			continue
 		if job["stage"] == ChunkStage.GENERATE_DATA:
-			apply_generated_data(chunk_position, result)
+			pending_generation_results.append({
+				"chunk_position": chunk_position,
+				"version": version,
+				"result": result,
+			})
 		else:
 			chunk_timings[chunk_position]["mesh_worker_usec"] = result["worker_usec"]
 			pending_mesh_data[chunk_position] = result
 			chunk_stages[chunk_position] = ChunkStage.APPLY_MESH
 			enqueue_work(chunk_position)
+
+
+func process_one_pending_generation_result() -> void:
+	if pending_generation_results.is_empty():
+		return
+	pending_generation_results.sort_custom(
+		func(a: Dictionary, b: Dictionary) -> bool:
+			var a_position: Vector2i = a["chunk_position"]
+			var b_position: Vector2i = b["chunk_position"]
+			var a_distance := distance_squared(a_position, current_player_chunk)
+			var b_distance := distance_squared(b_position, current_player_chunk)
+			if a_distance == b_distance:
+				if a_position.x == b_position.x:
+					return a_position.y < b_position.y
+				return a_position.x < b_position.x
+			return a_distance < b_distance
+	)
+	while not pending_generation_results.is_empty():
+		var pending: Dictionary = pending_generation_results.pop_front()
+		var chunk_position: Vector2i = pending["chunk_position"]
+		var version: int = pending["version"]
+		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
+			continue
+		apply_generated_data(chunk_position, pending["result"])
+		return
 
 
 func process_main_thread_queue() -> void:
@@ -312,6 +362,7 @@ func create_generation_parameters(chunk_position: Vector2i) -> Dictionary:
 
 
 func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
+	var apply_started_at := Time.get_ticks_usec()
 	if chunk_scene == null:
 		return
 	var chunk := chunk_scene.instantiate() as Chunk
@@ -326,6 +377,12 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	add_child(chunk)
 	loaded_chunks[chunk_position] = chunk
 	chunk.initialize_from_data(self, chunk_position, result["data"])
+	chunk_timings[chunk_position]["special_blocks_main_usec"] = chunk.last_special_blocks_sync_usec
+	chunk_timings[chunk_position]["special_blocks_created"] = chunk.last_special_blocks_created
+	chunk_timings[chunk_position]["apply_data_main_usec"] = (
+		Time.get_ticks_usec() - apply_started_at - chunk.last_special_blocks_sync_usec
+	)
+	chunk_timings[chunk_position]["apply_data_frame"] = Engine.get_process_frames()
 	var light_changed_chunks := initialize_chunk_block_light(chunk)
 	if log_chunk_override_application and int(result.get("override_count", 0)) > 0:
 		print(
@@ -336,13 +393,21 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	chunk_timings[chunk_position]["generation_worker_usec"] = result["worker_usec"]
 	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
 	enqueue_work(chunk_position)
+	var neighbor_remesh_requests := 0
 	for changed_position in light_changed_chunks:
 		if changed_position != chunk_position:
 			request_chunk_rebuild(changed_position)
+			neighbor_remesh_requests += 1
+	chunk_timings[chunk_position]["blocklight_changed_neighbor_chunks"] = neighbor_remesh_requests
+	chunk_timings[chunk_position]["blocklight_neighbor_remesh_requests"] = neighbor_remesh_requests
 
 
 func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	var data_copy_started_at := Time.get_ticks_usec()
+	var data_snapshot := chunk.data.duplicate_data()
+	var data_copy_elapsed := Time.get_ticks_usec() - data_copy_started_at
+	var block_borders_started_at := Time.get_ticks_usec()
 	var negative_x := create_empty_boundary()
 	var positive_x := create_empty_boundary()
 	var negative_z := create_empty_boundary()
@@ -355,12 +420,20 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	copy_neighbor_x_boundary(positive_x, chunk_position + Vector2i.RIGHT, 0)
 	copy_neighbor_z_boundary(negative_z, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_z_boundary(positive_z, chunk_position + Vector2i.DOWN, 0)
+	var block_borders_elapsed := Time.get_ticks_usec() - block_borders_started_at
+	var light_borders_started_at := Time.get_ticks_usec()
 	copy_neighbor_x_light_boundary(negative_x_light, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_x_light_boundary(positive_x_light, chunk_position + Vector2i.RIGHT, 0)
 	copy_neighbor_z_light_boundary(negative_z_light, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_z_light_boundary(positive_z_light, chunk_position + Vector2i.DOWN, 0)
+	var light_borders_elapsed := Time.get_ticks_usec() - light_borders_started_at
+	if chunk_timings.has(chunk_position):
+		chunk_timings[chunk_position]["snapshot_data_copy_usec"] = data_copy_elapsed
+		chunk_timings[chunk_position]["snapshot_block_borders_usec"] = block_borders_elapsed
+		chunk_timings[chunk_position]["snapshot_light_borders_usec"] = light_borders_elapsed
+		chunk_timings[chunk_position]["snapshot_frame"] = Engine.get_process_frames()
 	return {
-		"data": chunk.data.duplicate_data(),
+		"data": data_snapshot,
 		"negative_x": negative_x,
 		"positive_x": positive_x,
 		"negative_z": negative_z,
@@ -427,9 +500,14 @@ func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 	if chunk == null or not pending_mesh_data.has(chunk_position):
 		return
 	var started_at := Time.get_ticks_usec()
-	chunk.apply_mesh_data(pending_mesh_data[chunk_position])
+	var mesh_data: Dictionary = pending_mesh_data[chunk_position]
+	chunk.apply_mesh_data(mesh_data)
+	mesh_last_worker_usec = int(mesh_data.get("worker_usec", 0))
+	mesh_last_face_count = chunk.rendered_face_count
 	pending_mesh_data.erase(chunk_position)
-	chunk_timings[chunk_position]["apply_mesh_usec"] = Time.get_ticks_usec() - started_at
+	mesh_last_apply_usec = Time.get_ticks_usec() - started_at
+	chunk_timings[chunk_position]["apply_mesh_usec"] = mesh_last_apply_usec
+	chunk_timings[chunk_position]["apply_mesh_frame"] = Engine.get_process_frames()
 	if initial_chunks.has(chunk_position):
 		set_all_collision_sections_pending(chunk_position)
 		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
@@ -503,6 +581,12 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 	var started_at := Time.get_ticks_usec()
 	chunk.build_collision_section(section)
 	var elapsed := Time.get_ticks_usec() - started_at
+	var section_timings: Dictionary = chunk_timings[chunk_position].get("collision_sections_usec", {})
+	section_timings[section] = elapsed
+	chunk_timings[chunk_position]["collision_sections_usec"] = section_timings
+	var section_frames: Dictionary = chunk_timings[chunk_position].get("collision_section_frames", {})
+	section_frames[section] = Engine.get_process_frames()
+	chunk_timings[chunk_position]["collision_section_frames"] = section_frames
 	chunk_timings[chunk_position]["collision_usec"] = int(
 		chunk_timings[chunk_position].get("collision_usec", 0)
 	) + elapsed
@@ -527,6 +611,8 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 
 	if initial_chunks.has(chunk_position):
 		initial_chunks.erase(chunk_position)
+		if log_chunk_load_profile:
+			print_chunk_load_profile(chunk_position)
 		if log_chunk_timings and timing_samples_logged < timing_samples_to_log:
 			print_chunk_timing(chunk_position, false)
 			timing_samples_logged += 1
@@ -565,6 +651,47 @@ func print_gameplay_rebuild_timing(chunk_position: Vector2i) -> void:
 			float(timing.get("collision_usec", 0)) / 1000.0,
 		]
 	)
+
+
+func print_chunk_load_profile(chunk_position: Vector2i) -> void:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	var collision_sections: Dictionary = timing.get("collision_sections_usec", {})
+	var collision_frames: Dictionary = timing.get("collision_section_frames", {})
+	var main_total_usec := (
+		int(timing.get("generation_dispatch_usec", 0))
+		+ int(timing.get("apply_data_main_usec", 0))
+		+ int(timing.get("special_blocks_main_usec", 0))
+		+ int(timing.get("blocklight_init_usec", 0))
+		+ int(timing.get("snapshot_usec", 0))
+		+ int(timing.get("apply_mesh_usec", 0))
+		+ int(timing.get("collision_usec", 0))
+	)
+	var lines: Array[String] = [
+		"Chunk (%d,%d) load profile:" % [chunk_position.x, chunk_position.y],
+		"  MAIN apply data/setup: %.3f ms (frame %d)" % [float(timing.get("apply_data_main_usec", 0)) / 1000.0, int(timing.get("apply_data_frame", -1))],
+		"  MAIN special blocks: %.3f ms (%d created)" % [float(timing.get("special_blocks_main_usec", 0)) / 1000.0, int(timing.get("special_blocks_created", 0))],
+		"  MAIN BlockLight clear: %.3f ms" % [float(timing.get("blocklight_clear_usec", 0)) / 1000.0],
+		"  MAIN BlockLight source scan: %.3f ms" % [float(timing.get("blocklight_source_scan_usec", 0)) / 1000.0],
+		"  MAIN BlockLight border reconcile: %.3f ms" % [float(timing.get("blocklight_border_reconcile_usec", 0)) / 1000.0],
+		"  MAIN BlockLight BFS: %.3f ms" % [float(timing.get("blocklight_bfs_usec", 0)) / 1000.0],
+		"  MAIN BlockLight total: %.3f ms (frame %d)" % [float(timing.get("blocklight_init_usec", 0)) / 1000.0, int(timing.get("blocklight_frame", -1))],
+		"  MAIN light neighbor effects: %d chunks changed / %d remesh requests" % [int(timing.get("blocklight_changed_neighbor_chunks", 0)), int(timing.get("blocklight_neighbor_remesh_requests", 0))],
+		"  MAIN snapshot data copy: %.3f ms" % [float(timing.get("snapshot_data_copy_usec", 0)) / 1000.0],
+		"  MAIN snapshot block borders: %.3f ms" % [float(timing.get("snapshot_block_borders_usec", 0)) / 1000.0],
+		"  MAIN snapshot light borders: %.3f ms" % [float(timing.get("snapshot_light_borders_usec", 0)) / 1000.0],
+		"  MAIN snapshot total: %.3f ms (frame %d)" % [float(timing.get("snapshot_usec", 0)) / 1000.0, int(timing.get("snapshot_frame", -1))],
+		"  MAIN apply ArrayMesh: %.3f ms (frame %d)" % [float(timing.get("apply_mesh_usec", 0)) / 1000.0, int(timing.get("apply_mesh_frame", -1))],
+	]
+	for section in range(Chunk.COLLISION_SECTION_COUNT):
+		lines.append(
+			"  MAIN collision section %d: %.3f ms (frame %d)"
+			% [section, float(collision_sections.get(section, 0)) / 1000.0, int(collision_frames.get(section, -1))]
+		)
+	lines.append("  MAIN collision total: %.3f ms" % [float(timing.get("collision_usec", 0)) / 1000.0])
+	lines.append("  MAIN accumulated total: %.3f ms" % [float(main_total_usec) / 1000.0])
+	lines.append("  BACKGROUND generation worker: %.3f ms" % [float(timing.get("generation_worker_usec", 0)) / 1000.0])
+	lines.append("  BACKGROUND mesh-data worker: %.3f ms" % [float(timing.get("mesh_worker_usec", 0)) / 1000.0])
+	print("\n".join(lines))
 
 
 func print_gameplay_collision_stats(chunk_position: Vector2i) -> void:
@@ -627,6 +754,9 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 		# Future persistence hook: save modified block overrides before removing this chunk.
 		chunk.queue_free()
 	loaded_chunks.erase(chunk_position)
+	for index in range(pending_generation_results.size() - 1, -1, -1):
+		if pending_generation_results[index]["chunk_position"] == chunk_position:
+			pending_generation_results.remove_at(index)
 	var light_changed_chunks := remove_departed_light_sources(departed_sources)
 	chunk_stages.erase(chunk_position)
 	initial_chunks.erase(chunk_position)
@@ -774,27 +904,61 @@ func set_block_light_at_world_position(position: Vector3i, level: int, changed_c
 
 
 func initialize_chunk_block_light(chunk: Chunk) -> Dictionary:
+	var init_started_at := Time.get_ticks_usec()
 	var changed_chunks: Dictionary = {}
 	var propagation_queue: Array[Vector3i] = []
+	var clear_started_at := Time.get_ticks_usec()
 	chunk.data.block_light.fill(0)
-	for x in Chunk.SIZE_XZ:
-		for y in Chunk.HEIGHT:
-			for z in Chunk.SIZE_XZ:
-				var local_position := Vector3i(x, y, z)
-				var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
-				if emission > 0:
-					chunk.data.set_block_light(local_position, emission)
-					propagation_queue.append(chunk.local_to_world(local_position))
-	for y in Chunk.HEIGHT:
-		for edge in Chunk.SIZE_XZ:
-			for local_position in [Vector3i(0, y, edge), Vector3i(Chunk.SIZE_XZ - 1, y, edge), Vector3i(edge, y, 0), Vector3i(edge, y, Chunk.SIZE_XZ - 1)]:
-				var world_position := chunk.local_to_world(local_position)
-				for direction in TREE_LOG_DIRECTIONS:
-					var neighbor_position := world_position + direction
-					if get_chunk_at_world_position(neighbor_position) != chunk and get_block_light_at_world_position(neighbor_position) > 1:
-						propagation_queue.append(neighbor_position)
+	var clear_elapsed := Time.get_ticks_usec() - clear_started_at
+	var source_scan_started_at := Time.get_ticks_usec()
+	var chunk_origin := Vector3i(chunk.chunk_position.x * Chunk.SIZE_XZ, 0, chunk.chunk_position.y * Chunk.SIZE_XZ)
+	for block_index in chunk.data.emissive_block_indices:
+		var local_position := chunk.data.get_position_from_index(block_index)
+		var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
+		chunk.data.set_block_light(local_position, emission)
+		propagation_queue.append(chunk_origin + local_position)
+	var source_scan_elapsed := Time.get_ticks_usec() - source_scan_started_at
+	var border_started_at := Time.get_ticks_usec()
+	seed_light_from_x_border(chunk.chunk_position + Vector2i.LEFT, Chunk.SIZE_XZ - 1, propagation_queue)
+	seed_light_from_x_border(chunk.chunk_position + Vector2i.RIGHT, 0, propagation_queue)
+	seed_light_from_z_border(chunk.chunk_position + Vector2i.UP, Chunk.SIZE_XZ - 1, propagation_queue)
+	seed_light_from_z_border(chunk.chunk_position + Vector2i.DOWN, 0, propagation_queue)
+	var border_elapsed := Time.get_ticks_usec() - border_started_at
+	var bfs_started_at := Time.get_ticks_usec()
 	propagate_block_light(propagation_queue, changed_chunks)
+	var bfs_elapsed := Time.get_ticks_usec() - bfs_started_at
+	if chunk_timings.has(chunk.chunk_position):
+		chunk_timings[chunk.chunk_position]["blocklight_clear_usec"] = clear_elapsed
+		chunk_timings[chunk.chunk_position]["blocklight_source_scan_usec"] = source_scan_elapsed
+		chunk_timings[chunk.chunk_position]["blocklight_border_reconcile_usec"] = border_elapsed
+		chunk_timings[chunk.chunk_position]["blocklight_bfs_usec"] = bfs_elapsed
+		chunk_timings[chunk.chunk_position]["blocklight_init_usec"] = Time.get_ticks_usec() - init_started_at
+		chunk_timings[chunk.chunk_position]["blocklight_frame"] = Engine.get_process_frames()
 	return changed_chunks
+
+
+func seed_light_from_x_border(neighbor_position: Vector2i, neighbor_x: int, propagation_queue: Array[Vector3i]) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	var neighbor_origin := Vector3i(neighbor_position.x * Chunk.SIZE_XZ, 0, neighbor_position.y * Chunk.SIZE_XZ)
+	for y in Chunk.HEIGHT:
+		for z in Chunk.SIZE_XZ:
+			var local_position := Vector3i(neighbor_x, y, z)
+			if neighbor.data.get_block_light(local_position) > 1:
+				propagation_queue.append(neighbor_origin + local_position)
+
+
+func seed_light_from_z_border(neighbor_position: Vector2i, neighbor_z: int, propagation_queue: Array[Vector3i]) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	var neighbor_origin := Vector3i(neighbor_position.x * Chunk.SIZE_XZ, 0, neighbor_position.y * Chunk.SIZE_XZ)
+	for y in Chunk.HEIGHT:
+		for x in Chunk.SIZE_XZ:
+			var local_position := Vector3i(x, y, neighbor_z)
+			if neighbor.data.get_block_light(local_position) > 1:
+				propagation_queue.append(neighbor_origin + local_position)
 
 
 func update_block_light_after_change(world_position: Vector3i) -> Dictionary:
@@ -847,26 +1011,58 @@ func process_block_light_removal(removal_queue: Array[Dictionary], propagation_q
 
 
 func propagate_block_light(propagation_queue: Array[Vector3i], changed_chunks: Dictionary) -> void:
+	var queue_chunks: Array[Chunk] = []
+	var queue_indices := PackedInt32Array()
+	for seed_position in propagation_queue:
+		var seed_chunk := get_chunk_at_world_position(seed_position)
+		if seed_chunk == null:
+			continue
+		var seed_origin := Vector3i(seed_chunk.chunk_position.x * Chunk.SIZE_XZ, 0, seed_chunk.chunk_position.y * Chunk.SIZE_XZ)
+		var seed_local := seed_position - seed_origin
+		if seed_chunk.data.is_valid_position(seed_local):
+			queue_chunks.append(seed_chunk)
+			queue_indices.append(seed_chunk.data.get_index(seed_local))
 	var index := 0
-	while index < propagation_queue.size():
-		var position := propagation_queue[index]
+	while index < queue_indices.size():
+		var source_chunk := queue_chunks[index]
+		var source_local := source_chunk.data.get_position_from_index(queue_indices[index])
 		index += 1
-		var level := maxi(get_block_light_at_world_position(position), BlockRegistry.get_light_emission(get_block_at_world_position(position)))
+		var source_block := source_chunk.data.get_block(source_local)
+		var level := maxi(source_chunk.data.get_block_light(source_local), BlockRegistry.get_light_emission(source_block))
 		if level <= 1:
 			continue
 		for direction in TREE_LOG_DIRECTIONS:
-			var neighbor_position := position + direction
-			var neighbor_chunk := get_chunk_at_world_position(neighbor_position)
-			if neighbor_chunk == null:
+			var neighbor_local := source_local + direction
+			var neighbor_chunk: Chunk = source_chunk
+			if neighbor_local.y < 0 or neighbor_local.y >= Chunk.HEIGHT:
 				continue
-			var neighbor_block := get_block_at_world_position(neighbor_position)
+			var neighbor_chunk_position := source_chunk.chunk_position
+			if neighbor_local.x < 0:
+				neighbor_chunk_position += Vector2i.LEFT
+				neighbor_local.x = Chunk.SIZE_XZ - 1
+			elif neighbor_local.x >= Chunk.SIZE_XZ:
+				neighbor_chunk_position += Vector2i.RIGHT
+				neighbor_local.x = 0
+			elif neighbor_local.z < 0:
+				neighbor_chunk_position += Vector2i.UP
+				neighbor_local.z = Chunk.SIZE_XZ - 1
+			elif neighbor_local.z >= Chunk.SIZE_XZ:
+				neighbor_chunk_position += Vector2i.DOWN
+				neighbor_local.z = 0
+			if neighbor_chunk_position != source_chunk.chunk_position:
+				neighbor_chunk = loaded_chunks.get(neighbor_chunk_position) as Chunk
+				if neighbor_chunk == null:
+					continue
+			var neighbor_block := neighbor_chunk.data.get_block(neighbor_local)
 			if not BlockRegistry.is_light_transparent(neighbor_block):
 				continue
 			var desired_level := maxi(level - 1, BlockRegistry.get_light_emission(neighbor_block))
-			if desired_level <= get_block_light_at_world_position(neighbor_position):
+			if desired_level <= neighbor_chunk.data.get_block_light(neighbor_local):
 				continue
-			set_block_light_at_world_position(neighbor_position, desired_level, changed_chunks)
-			propagation_queue.append(neighbor_position)
+			neighbor_chunk.data.set_block_light(neighbor_local, desired_level)
+			changed_chunks[neighbor_chunk.chunk_position] = true
+			queue_chunks.append(neighbor_chunk)
+			queue_indices.append(neighbor_chunk.data.get_index(neighbor_local))
 
 
 func remove_departed_light_sources(sources: Array[Dictionary]) -> Dictionary:
@@ -1110,11 +1306,39 @@ func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
 	dropped_item.global_position = position
 
 
-func get_loaded_torch_light_count() -> int:
+func get_loaded_chunk_count() -> int:
+	return loaded_chunks.size()
+
+
+func get_total_rendered_face_count() -> int:
 	var total := 0
 	for chunk in loaded_chunks.values():
 		if chunk is Chunk:
-			total += (chunk as Chunk).get_torch_light_count()
+			total += (chunk as Chunk).rendered_face_count
+	return total
+
+
+func get_active_torch_count() -> int:
+	var total := 0
+	for chunk in loaded_chunks.values():
+		if chunk is Chunk:
+			total += (chunk as Chunk).get_torch_count()
+	return total
+
+
+func get_active_particle_emitter_count() -> int:
+	var total := 0
+	for chunk in loaded_chunks.values():
+		if chunk is Chunk:
+			total += (chunk as Chunk).get_particle_emitter_count()
+	return total
+
+
+func get_active_particle_budget() -> int:
+	var total := 0
+	for chunk in loaded_chunks.values():
+		if chunk is Chunk:
+			total += (chunk as Chunk).get_particle_budget()
 	return total
 
 

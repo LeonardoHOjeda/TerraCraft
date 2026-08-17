@@ -53,7 +53,11 @@ Biome: %s
 Biome Value: %.3f
 Seed: %d
 FPS: %d
-Torch lights loaded: %d
+Chunks loaded: %d
+Rendered faces: %d
+Last mesh: %d faces / %.2f ms worker / %.2f ms apply
+Torches: %d
+Particle emitters/budget: %d / %d
 Block light: %d
 BlockLight updates: %d
 BlockLight last: %.2f ms / %d chunks
@@ -70,7 +74,14 @@ BlockLight last: %.2f ms / %d chunks
 		biome_value,
 		world.seed,
 		Engine.get_frames_per_second(),
-		world.get_loaded_torch_light_count(),
+		world.get_loaded_chunk_count(),
+		world.get_total_rendered_face_count(),
+		world.mesh_last_face_count,
+		float(world.mesh_last_worker_usec) / 1000.0,
+		float(world.mesh_last_apply_usec) / 1000.0,
+		world.get_active_torch_count(),
+		world.get_active_particle_emitter_count(),
+		world.get_active_particle_budget(),
 		world.get_block_light_at_world_position(block_position),
 		world.block_light_update_count,
 		float(world.block_light_last_update_usec) / 1000.0,

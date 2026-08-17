@@ -7,14 +7,18 @@ code = "shader_type spatial;
 render_mode depth_draw_opaque, cull_back;
 
 uniform sampler2D atlas_texture : source_color, filter_nearest, repeat_disable;
+uniform vec3 block_light_tint : source_color = vec3(1.0, 0.58, 0.26);
+uniform float block_light_strength = 0.82;
 
 void fragment() {
 	vec4 tex = texture(atlas_texture, UV);
 	ALBEDO = tex.rgb;
-	EMISSION = tex.rgb * COLOR.rgb;
+	EMISSION = tex.rgb * COLOR.rgb * block_light_tint * block_light_strength;
 }
 "
 
 [resource]
 shader = SubResource("Shader_block_light")
 shader_parameter/atlas_texture = ExtResource("1_3b6p3")
+shader_parameter/block_light_tint = Vector3(1, 0.58, 0.26)
+shader_parameter/block_light_strength = 0.82

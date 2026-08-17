@@ -15,6 +15,9 @@ var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
 var collision_builder := ChunkCollisionBuilder.new()
 var collision_section_mesh_data: Array[Dictionary] = []
+var rendered_face_count: int = 0
+var last_special_blocks_sync_usec: int = 0
+var last_special_blocks_created: int = 0
 var special_blocks_root: Node3D
 var special_block_nodes: Dictionary = {}
 
@@ -135,11 +138,13 @@ func rebuild_mesh() -> void:
 func build_mesh_only() -> void:
 	mesh = mesher.build(data, Callable(self, "get_neighbor_block"))
 	collision_section_mesh_data = mesher.last_collision_sections
+	rendered_face_count = 0 if mesh == null or mesh.get_surface_count() == 0 else mesh.surface_get_array_len(0) / 4
 
 
 func apply_mesh_data(mesh_data: Dictionary) -> void:
 	collision_section_mesh_data = mesh_data["collision_sections"]
 	mesh = mesher.create_mesh(mesh_data)
+	rendered_face_count = (mesh_data["vertices"] as PackedVector3Array).size() / 4
 
 
 func build_collision_only() -> void:
@@ -228,15 +233,14 @@ func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
 
 
 func rebuild_special_blocks() -> void:
+	var started_at := Time.get_ticks_usec()
 	for node in special_block_nodes.values():
 		(node as Node).queue_free()
 	special_block_nodes.clear()
-	for x in SIZE_XZ:
-		for y in HEIGHT:
-			for z in SIZE_XZ:
-				var local_position := Vector3i(x, y, z)
-				if BlockRegistry.is_special_block(data.get_block(local_position)):
-					create_special_block(local_position)
+	for block_index in data.special_block_indices:
+		create_special_block(data.get_position_from_index(block_index))
+	last_special_blocks_sync_usec = Time.get_ticks_usec() - started_at
+	last_special_blocks_created = special_block_nodes.size()
 
 
 func sync_special_block(local_position: Vector3i) -> void:
@@ -308,6 +312,49 @@ func create_special_block(local_position: Vector3i) -> void:
 	tip.material_override = tip_material
 	torch.add_child(tip)
 
+	var particles := GPUParticles3D.new()
+	particles.name = "Embers"
+	particles.position = base_position + shaft_direction * 0.78
+	particles.amount = 4
+	particles.lifetime = 0.75
+	particles.randomness = 0.45
+	particles.local_coords = false
+	particles.visibility_aabb = AABB(Vector3(-0.45, -0.15, -0.45), Vector3(0.9, 1.4, 0.9))
+	particles.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+	var particle_process := ParticleProcessMaterial.new()
+	particle_process.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_POINT
+	particle_process.direction = Vector3.UP
+	particle_process.spread = 22.0
+	particle_process.initial_velocity_min = 0.25
+	particle_process.initial_velocity_max = 0.55
+	particle_process.gravity = Vector3(0.0, 0.12, 0.0)
+	particle_process.scale_min = 0.55
+	particle_process.scale_max = 1.0
+	var color_gradient := Gradient.new()
+	color_gradient.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	color_gradient.colors = PackedColorArray([
+		Color(1.0, 0.72, 0.18, 0.95),
+		Color(1.0, 0.28, 0.03, 0.65),
+		Color(0.35, 0.035, 0.005, 0.0),
+	])
+	var color_ramp := GradientTexture1D.new()
+	color_ramp.gradient = color_gradient
+	particle_process.color_ramp = color_ramp
+	particles.process_material = particle_process
+
+	var particle_quad := QuadMesh.new()
+	particle_quad.size = Vector2(0.035, 0.035)
+	var particle_material := StandardMaterial3D.new()
+	particle_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	particle_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	particle_material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	particle_material.vertex_color_use_as_albedo = true
+	particle_material.albedo_color = Color(1.0, 0.65, 0.12, 1.0)
+	particle_quad.material = particle_material
+	particles.draw_pass_1 = particle_quad
+	torch.add_child(particles)
+
 	var body := StaticBody3D.new()
 	body.set_meta("chunk", self)
 	body.set_meta("special_local_position", local_position)
@@ -323,8 +370,16 @@ func create_special_block(local_position: Vector3i) -> void:
 	special_block_nodes[local_position] = torch
 
 
-func get_torch_light_count() -> int:
-	return 0
+func get_torch_count() -> int:
+	return special_block_nodes.size()
+
+
+func get_particle_emitter_count() -> int:
+	return special_block_nodes.size()
+
+
+func get_particle_budget() -> int:
+	return special_block_nodes.size() * 4
 
 func get_neighbor_block(local_position: Vector3i) -> int:
 	if (
