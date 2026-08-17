@@ -11,6 +11,7 @@ var chunk_position := Vector2i.ZERO
 var data := ChunkData.new()
 var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
+var collision_builder := ChunkCollisionBuilder.new()
 
 
 static func from_collider(collider: Object) -> Chunk:
@@ -109,17 +110,7 @@ func get_block(position: Vector3i) -> int:
 
 func rebuild_mesh() -> void:
 	mesh = mesher.build(data, Callable(self, "get_neighbor_block"))
-
-	for child in get_children():
-		if child is StaticBody3D:
-			child.free()
-
-	if mesh != null and mesh.get_surface_count() > 0:
-		create_trimesh_collision()
-
-		for child in get_children():
-			if child is StaticBody3D:
-				child.set_meta("chunk", self)
+	collision_builder.rebuild(self, self)
 
 
 func remove_block(position: Vector3i) -> int:
