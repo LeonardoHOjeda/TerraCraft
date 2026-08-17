@@ -7,6 +7,7 @@
 [ext_resource type="Script" uid="uid://bkhfw1rvpglw0" path="res://debug_panel.gd" id="6_7mycd"]
 [ext_resource type="Script" uid="uid://cuhw0djt0inwo" path="res://inventory_ui.gd" id="7_272bh"]
 [ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="8_5vw27"]
+[ext_resource type="Script" path="res://crafting/crafting_panel.gd" id="9_crafting"]
 
 [node name="Main" type="Node3D" unique_id=828085398]
 
@@ -102,6 +103,7 @@ layout_mode = 2
 [node name="CraftingGrid" type="GridContainer" parent="UI/InventoryPanel/HBoxContainer/CraftingSection/CraftingScroll" unique_id=1132393090]
 layout_mode = 2
 columns = 3
+script = ExtResource("9_crafting")
 
 [node name="InventorySection" type="VBoxContainer" parent="UI/InventoryPanel/HBoxContainer" unique_id=1590614973]
 layout_mode = 2
