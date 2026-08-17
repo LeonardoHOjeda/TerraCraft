@@ -1,8 +1,8 @@
 class_name Chunk
 extends MeshInstance3D
 
-const SIZE_XZ := 16
-const HEIGHT := 64
+const SIZE_XZ := ChunkData.SIZE_XZ
+const HEIGHT := ChunkData.HEIGHT
 const ATLAS_SIZE := 16.0
 
 var world: World
@@ -25,7 +25,7 @@ var platinum_noise: FastNoiseLite
 var terrain_height: int = 8
 var base_height: int = 4
 
-var blocks := []
+var data := ChunkData.new()
 
 var vertices := PackedVector3Array()
 var normals := PackedVector3Array()
@@ -50,14 +50,7 @@ static func from_collider(collider: Object) -> Chunk:
 
 
 func is_valid_local_position(local_position: Vector3i) -> bool:
-	return (
-		local_position.x >= 0
-		and local_position.y >= 0
-		and local_position.z >= 0
-		and local_position.x < SIZE_XZ
-		and local_position.y < HEIGHT
-		and local_position.z < SIZE_XZ
-	)
+	return data.is_valid_position(local_position)
 
 
 func world_to_local(world_position: Vector3i) -> Vector3i:
@@ -141,16 +134,10 @@ func initialize(
 
 
 func generate_blocks() -> void:
-	blocks.resize(SIZE_XZ)
+	data.reset()
 
 	for x in SIZE_XZ:
-		blocks[x] = []
-		blocks[x].resize(HEIGHT)
-
 		for y in HEIGHT:
-			blocks[x][y] = []
-			blocks[x][y].resize(SIZE_XZ)
-
 			for z in SIZE_XZ:
 				var world_x := chunk_position.x * SIZE_XZ + x
 				var world_z := chunk_position.y * SIZE_XZ + z
@@ -187,36 +174,26 @@ func generate_blocks() -> void:
 						is_cave = true
 
 				if y == 0:
-					blocks[x][y][z] = BlockRegistry.Block.BEDROCK
+					data.set_block(Vector3i(x, y, z), BlockRegistry.Block.BEDROCK)
 
 				elif y > surface_height:
-					blocks[x][y][z] = BlockRegistry.Block.AIR
+					data.set_block(Vector3i(x, y, z), BlockRegistry.Block.AIR)
 
 				elif is_cave:
-					blocks[x][y][z] = BlockRegistry.Block.AIR
+					data.set_block(Vector3i(x, y, z), BlockRegistry.Block.AIR)
 
 				elif y == surface_height:
-					blocks[x][y][z] = surface_block
+					data.set_block(Vector3i(x, y, z), surface_block)
 
 				elif y >= surface_height - 3:
-					blocks[x][y][z] = underground_block
+					data.set_block(Vector3i(x, y, z), underground_block)
 
 				else:
-					blocks[x][y][z] = get_ore_block(world_x, y, world_z)
+					data.set_block(Vector3i(x, y, z), get_ore_block(world_x, y, world_z))
 
 
 func get_block(position: Vector3i) -> int:
-	if (
-		position.x < 0
-		or position.y < 0
-		or position.z < 0
-		or position.x >= SIZE_XZ
-		or position.y >= HEIGHT
-		or position.z >= SIZE_XZ
-	):
-		return BlockRegistry.Block.AIR
-
-	return blocks[position.x][position.y][position.z]
+	return data.get_block(position)
 
 
 func rebuild_mesh() -> void:
@@ -228,7 +205,7 @@ func rebuild_mesh() -> void:
 	for x in SIZE_XZ:
 		for y in HEIGHT:
 			for z in SIZE_XZ:
-				var block: int = blocks[x][y][z]
+				var block: int = data.get_block(Vector3i(x, y, z))
 
 				if block == BlockRegistry.Block.AIR:
 					continue
@@ -433,10 +410,10 @@ func get_face_vertices(direction: Vector3i) -> Array[Vector3]:
 	]
 
 func remove_block(position: Vector3i) -> int:
-	if (position.x < 0 or position.y < 0 or position.z < 0 or position.x >= SIZE_XZ or position.y >= HEIGHT or position.z >= SIZE_XZ):
+	if not data.is_valid_position(position):
 		return BlockRegistry.Block.AIR
 
-	var block: int = blocks[position.x][position.y][position.z]
+	var block: int = data.get_block(position)
 
 	if block == BlockRegistry.Block.AIR:
 		return BlockRegistry.Block.AIR
@@ -444,32 +421,25 @@ func remove_block(position: Vector3i) -> int:
 	if block == BlockRegistry.Block.BEDROCK:
 		return BlockRegistry.Block.AIR
 
-	blocks[position.x][position.y][position.z] = BlockRegistry.Block.AIR
+	data.set_block(position, BlockRegistry.Block.AIR)
 
 	return block
 
 func place_block(position: Vector3i, block: int) -> bool:
-	if (
-		position.x < 0
-		or position.y < 0
-		or position.z < 0
-		or position.x >= SIZE_XZ
-		or position.y >= HEIGHT
-		or position.z >= SIZE_XZ
-	):
+	if not data.is_valid_position(position):
 		return false
 
-	if blocks[position.x][position.y][position.z] != BlockRegistry.Block.AIR:
+	if data.get_block(position) != BlockRegistry.Block.AIR:
 		return false
 
-	blocks[position.x][position.y][position.z] = block
+	data.set_block(position, block)
 
 	return true
 
 
 func get_surface_height(x: int, z: int) -> int:
 	for y in range(HEIGHT - 1, -1, -1):
-		var block: int = blocks[x][y][z]
+		var block: int = data.get_block(Vector3i(x, y, z))
 
 		if (
 			block == BlockRegistry.Block.GRASS
@@ -482,20 +452,13 @@ func get_surface_height(x: int, z: int) -> int:
 
 
 func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
-	if (
-		position.x < 0
-		or position.y < 0
-		or position.z < 0
-		or position.x >= SIZE_XZ
-		or position.y >= HEIGHT
-		or position.z >= SIZE_XZ
-	):
+	if not data.is_valid_position(position):
 		return false
 
-	if blocks[position.x][position.y][position.z] != BlockRegistry.Block.AIR:
+	if data.get_block(position) != BlockRegistry.Block.AIR:
 		return false
 
-	blocks[position.x][position.y][position.z] = block
+	data.set_block(position, block)
 	return true
 
 func get_neighbor_block(local_position: Vector3i) -> int:
