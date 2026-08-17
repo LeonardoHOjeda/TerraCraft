@@ -86,15 +86,13 @@ const RECIPES := [
   },
 ]
 
-static func can_craft(player: Player,recipe: Dictionary) -> bool:
-	var inventory := player.inventory
-
+static func can_craft(inventory: Inventory, station_access: StationDetector, recipe: Dictionary) -> bool:
 	var station: int = recipe.get(
 		"station",
 		Station.NONE
 	)
 
-	if not player.has_nearby_station(station):
+	if not station_access.has_nearby_station(station):
 		return false
 
 	for item_id in recipe["ingredients"]:
@@ -107,12 +105,11 @@ static func can_craft(player: Player,recipe: Dictionary) -> bool:
 
 
 static func craft(
-	player: Player,
+	inventory: Inventory,
+	station_access: StationDetector,
 	recipe: Dictionary
 ) -> bool:
-	var inventory := player.inventory
-
-	if not can_craft(player, recipe):
+	if not can_craft(inventory, station_access, recipe):
 		return false
 
 	var output_item: int = recipe["output_item"]
