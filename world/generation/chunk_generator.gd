@@ -43,10 +43,20 @@ func generate_data(parameters: Dictionary) -> Dictionary:
 	)
 	var overrides: Dictionary = parameters.get("overrides", {})
 	apply_overrides(data, overrides)
+	var sunlight_profile := data.initialize_local_sunlight()
 	return {
 		"data": data,
 		"worker_usec": Time.get_ticks_usec() - started_at,
 		"override_count": overrides.size(),
+		"sunlight_vertical_worker_usec": sunlight_profile["vertical_usec"],
+		"sunlight_local_bfs_worker_usec": sunlight_profile["bfs_usec"],
+		"sunlight_direct_voxels": sunlight_profile["direct_voxels"],
+		"sunlight_seed_count": sunlight_profile["seed_count"],
+		"sunlight_legacy_seed_count": sunlight_profile["legacy_seed_count"],
+		"sunlight_processed_voxels": sunlight_profile["processed_voxels"],
+		"sunlight_queue_pushes": sunlight_profile["queue_pushes"],
+		"sunlight_duplicate_rejections": sunlight_profile["duplicate_rejections"],
+		"sunlight_neighbor_operations": sunlight_profile["neighbor_operations"],
 	}
 
 

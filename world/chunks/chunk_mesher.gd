@@ -2,8 +2,13 @@ class_name ChunkMesher
 extends RefCounted
 
 const ATLAS_SIZE := 16.0
-const COLLISION_SECTION_HEIGHT := 16
-const COLLISION_SECTION_COUNT := ChunkData.HEIGHT / COLLISION_SECTION_HEIGHT
+const COLLISION_REGION_SIZE := 16
+const COLLISION_REGION_COUNT_X := ChunkData.SIZE_XZ / COLLISION_REGION_SIZE
+const COLLISION_REGION_COUNT_Y := ChunkData.HEIGHT / COLLISION_REGION_SIZE
+const COLLISION_REGION_COUNT_Z := ChunkData.SIZE_XZ / COLLISION_REGION_SIZE
+const COLLISION_REGION_COUNT := (
+	COLLISION_REGION_COUNT_X * COLLISION_REGION_COUNT_Y * COLLISION_REGION_COUNT_Z
+)
 
 const DIRECTIONS := [
 	Vector3i(0, 1, 0),
@@ -19,16 +24,13 @@ var normals := PackedVector3Array()
 var uvs := PackedVector2Array()
 var colors := PackedColorArray()
 var indices := PackedInt32Array()
-var section_vertices: Array[PackedVector3Array] = []
-var section_normals: Array[PackedVector3Array] = []
-var section_uvs: Array[PackedVector2Array] = []
-var section_indices: Array[PackedInt32Array] = []
-var last_collision_sections: Array[Dictionary] = []
+var last_collision_units: Array[Dictionary] = []
 
 
 func build(data: ChunkData, neighbor_block_provider: Callable) -> ArrayMesh:
 	reset_buffers()
 	build_geometry(data, neighbor_block_provider)
+	last_collision_units = build_greedy_collision_units(data, get_all_collision_unit_indices())
 	return create_mesh(get_mesh_data())
 
 
@@ -46,7 +48,16 @@ func build_mesh_data(snapshot: Dictionary) -> Dictionary:
 				for direction in DIRECTIONS:
 					var neighbor_position = block_position + direction
 					if not BlockRegistry.is_occluding_block(get_snapshot_block(snapshot, neighbor_position)):
-						add_face(block_position, direction, block, get_snapshot_light(snapshot, neighbor_position))
+						add_face(
+							block_position,
+							direction,
+							block,
+							get_snapshot_light(snapshot, neighbor_position),
+							get_snapshot_sun_light(snapshot, neighbor_position)
+						)
+	last_collision_units = build_greedy_collision_units(
+		data, snapshot.get("collision_unit_indices", [])
+	)
 	var mesh_data := get_mesh_data()
 	mesh_data["worker_usec"] = Time.get_ticks_usec() - started_at
 	return mesh_data
@@ -58,15 +69,7 @@ func reset_buffers() -> void:
 	uvs.clear()
 	colors.clear()
 	indices.clear()
-	section_vertices.clear()
-	section_normals.clear()
-	section_uvs.clear()
-	section_indices.clear()
-	for _section in COLLISION_SECTION_COUNT:
-		section_vertices.append(PackedVector3Array())
-		section_normals.append(PackedVector3Array())
-		section_uvs.append(PackedVector2Array())
-		section_indices.append(PackedInt32Array())
+	last_collision_units.clear()
 
 
 func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
@@ -88,32 +91,124 @@ func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
 							block_position,
 							direction,
 							block,
-							get_neighbor_light(data, neighbor_position)
+							get_neighbor_light(data, neighbor_position),
+							get_neighbor_sun_light(data, neighbor_position)
 						)
 
 
 func get_mesh_data() -> Dictionary:
-	last_collision_sections = get_collision_section_data()
 	return {
 		"vertices": vertices,
 		"normals": normals,
 		"uvs": uvs,
 		"colors": colors,
 		"indices": indices,
-		"collision_sections": last_collision_sections,
+		"collision_units": last_collision_units,
 	}
 
 
-func get_collision_section_data() -> Array[Dictionary]:
-	var sections: Array[Dictionary] = []
-	for section in COLLISION_SECTION_COUNT:
-		sections.append({
-			"vertices": section_vertices[section],
-			"normals": section_normals[section],
-			"uvs": section_uvs[section],
-			"indices": section_indices[section],
+func get_all_collision_unit_indices() -> Array[int]:
+	var indices: Array[int] = []
+	for unit_index in COLLISION_REGION_COUNT:
+		indices.append(unit_index)
+	return indices
+
+
+func build_greedy_collision_units(
+	data: ChunkData, unit_indices: Array = []
+) -> Array[Dictionary]:
+	var units: Array[Dictionary] = []
+	for unit_index in unit_indices:
+		var unit_y: int = int(unit_index)
+		if unit_y < 0 or unit_y >= COLLISION_REGION_COUNT_Y:
+			continue
+		var started_at := Time.get_ticks_usec()
+		var y_min := unit_y * COLLISION_REGION_SIZE
+		var y_max := mini(y_min + COLLISION_REGION_SIZE, ChunkData.HEIGHT)
+		var visited := PackedByteArray()
+		visited.resize(ChunkData.SIZE_XZ * (y_max - y_min) * ChunkData.SIZE_XZ)
+		visited.fill(0)
+		var centers := PackedVector3Array()
+		var sizes := PackedVector3Array()
+		var solid_voxels := 0
+		for y in range(y_min, y_max):
+			for z in ChunkData.SIZE_XZ:
+				for x in ChunkData.SIZE_XZ:
+					var visited_index := get_collision_unit_voxel_index(x, y - y_min, z)
+					if not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+						continue
+					solid_voxels += 1
+					if visited[visited_index] != 0:
+						continue
+					var end_x := x + 1
+					while end_x < ChunkData.SIZE_XZ:
+						var candidate_index := get_collision_unit_voxel_index(end_x, y - y_min, z)
+						if visited[candidate_index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[end_x][y][z]):
+							break
+						end_x += 1
+					var end_z := z + 1
+					while end_z < ChunkData.SIZE_XZ and is_collision_strip_available(
+						data, visited, x, end_x, y, y_min, end_z
+					):
+						end_z += 1
+					var end_y := y + 1
+					while end_y < y_max and is_collision_layer_available(
+						data, visited, x, end_x, z, end_z, end_y, y_min
+					):
+						end_y += 1
+					for mark_y in range(y, end_y):
+						for mark_z in range(z, end_z):
+							for mark_x in range(x, end_x):
+								visited[get_collision_unit_voxel_index(mark_x, mark_y - y_min, mark_z)] = 1
+					var size := Vector3(end_x - x, end_y - y, end_z - z)
+					sizes.append(size)
+					centers.append(Vector3(x, y, z) + size * 0.5)
+		units.append({
+			"unit_index": unit_y,
+			"centers": centers,
+			"sizes": sizes,
+			"solid_voxels": solid_voxels,
+			"worker_usec": Time.get_ticks_usec() - started_at,
 		})
-	return sections
+	return units
+
+
+func get_collision_unit_voxel_index(x: int, local_y: int, z: int) -> int:
+	return (local_y * ChunkData.SIZE_XZ + z) * ChunkData.SIZE_XZ + x
+
+
+func is_collision_strip_available(
+	data: ChunkData,
+	visited: PackedByteArray,
+	start_x: int,
+	end_x: int,
+	y: int,
+	y_min: int,
+	z: int
+) -> bool:
+	for x in range(start_x, end_x):
+		var index := get_collision_unit_voxel_index(x, y - y_min, z)
+		if visited[index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+			return false
+	return true
+
+
+func is_collision_layer_available(
+	data: ChunkData,
+	visited: PackedByteArray,
+	start_x: int,
+	end_x: int,
+	start_z: int,
+	end_z: int,
+	y: int,
+	y_min: int
+) -> bool:
+	for z in range(start_z, end_z):
+		for x in range(start_x, end_x):
+			var index := get_collision_unit_voxel_index(x, y - y_min, z)
+			if visited[index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+				return false
+	return true
 
 
 func create_mesh(mesh_data: Dictionary) -> ArrayMesh:
@@ -170,14 +265,39 @@ func get_neighbor_light(data: ChunkData, position: Vector3i) -> int:
 	return data.get_block_light(position)
 
 
-func add_face(block_position: Vector3i, direction: Vector3i, block: int, light_level: int) -> void:
+func get_snapshot_sun_light(snapshot: Dictionary, position: Vector3i) -> int:
+	if position.y >= ChunkData.HEIGHT:
+		return 15
+	if position.y < 0:
+		return 0
+	if position.x >= 0 and position.x < ChunkData.SIZE_XZ and position.z >= 0 and position.z < ChunkData.SIZE_XZ:
+		var data: ChunkData = snapshot["data"]
+		return data.get_sun_light(position)
+	if position.x < 0:
+		return snapshot["negative_x_sun"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.x >= ChunkData.SIZE_XZ:
+		return snapshot["positive_x_sun"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.z < 0:
+		return snapshot["negative_z_sun"][position.y * ChunkData.SIZE_XZ + position.x]
+	return snapshot["positive_z_sun"][position.y * ChunkData.SIZE_XZ + position.x]
+
+
+func get_neighbor_sun_light(data: ChunkData, position: Vector3i) -> int:
+	if position.y >= ChunkData.HEIGHT:
+		return 15
+	return data.get_sun_light(position)
+
+
+func add_face(block_position: Vector3i, direction: Vector3i, block: int, block_light_level: int, sun_light_level: int) -> void:
 	var face_vertices := get_face_vertices(direction)
 	var texture_position := get_block_texture(block, direction)
 	var face_uvs := get_atlas_uvs(texture_position)
 
 	var start_index := vertices.size()
-	var light_ratio := float(clampi(light_level, 0, 15)) / 15.0
-	var brightness := pow(light_ratio, 1.35)
+	var block_ratio := float(clampi(block_light_level, 0, 15)) / 15.0
+	var sun_ratio := float(clampi(sun_light_level, 0, 15)) / 15.0
+	var block_brightness := pow(block_ratio, 1.35)
+	var sun_brightness := pow(sun_ratio, 1.2)
 
 	for i in face_vertices.size():
 		vertices.append(
@@ -186,7 +306,7 @@ func add_face(block_position: Vector3i, direction: Vector3i, block: int, light_l
 
 		normals.append(Vector3(direction))
 		uvs.append(face_uvs[i])
-		colors.append(Color(brightness, brightness, brightness, 1.0))
+		colors.append(Color(block_brightness, sun_brightness, 0.0, 1.0))
 
 	indices.append(start_index)
 	indices.append(start_index + 2)
@@ -196,39 +316,21 @@ func add_face(block_position: Vector3i, direction: Vector3i, block: int, light_l
 	indices.append(start_index + 3)
 	indices.append(start_index + 2)
 
-	add_collision_face(block_position, face_vertices, face_uvs, direction)
 
 
-func add_collision_face(
-	block_position: Vector3i,
-	face_vertices: Array[Vector3],
-	face_uvs: Array[Vector2],
-	direction: Vector3i
-) -> void:
-	var section := clampi(
-		floori(float(block_position.y) / COLLISION_SECTION_HEIGHT),
-		0,
-		COLLISION_SECTION_COUNT - 1
+static func get_collision_region_index(region: Vector3i) -> int:
+	return (
+		(region.y * COLLISION_REGION_COUNT_Z + region.z) * COLLISION_REGION_COUNT_X
+		+ region.x
 	)
-	var target_vertices := section_vertices[section]
-	var target_normals := section_normals[section]
-	var target_uvs := section_uvs[section]
-	var target_indices := section_indices[section]
-	var start_index := target_vertices.size()
-	for i in face_vertices.size():
-		target_vertices.append(Vector3(block_position) + face_vertices[i])
-		target_normals.append(Vector3(direction))
-		target_uvs.append(face_uvs[i])
-	target_indices.append(start_index)
-	target_indices.append(start_index + 2)
-	target_indices.append(start_index + 1)
-	target_indices.append(start_index)
-	target_indices.append(start_index + 3)
-	target_indices.append(start_index + 2)
-	section_vertices[section] = target_vertices
-	section_normals[section] = target_normals
-	section_uvs[section] = target_uvs
-	section_indices[section] = target_indices
+
+
+static func get_collision_region_coords(index: int) -> Vector3i:
+	var region_x := index % COLLISION_REGION_COUNT_X
+	var yz := index / COLLISION_REGION_COUNT_X
+	var region_z := yz % COLLISION_REGION_COUNT_Z
+	var region_y := yz / COLLISION_REGION_COUNT_Z
+	return Vector3i(region_x, region_y, region_z)
 
 
 func get_block_texture(block: int, direction: Vector3i) -> Vector2i:

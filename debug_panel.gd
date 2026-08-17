@@ -59,8 +59,15 @@ Last mesh: %d faces / %.2f ms worker / %.2f ms apply
 Torches: %d
 Particle emitters/budget: %d / %d
 Block light: %d
+Sun light: %d
+Final voxel light: %d
 BlockLight updates: %d
 BlockLight last: %.2f ms / %d chunks
+SunLight updates: %d
+SunLight last: %.2f ms / %d chunks
+Sun remove/reprop: %.2f / %.2f ms
+Streaming main budget/used: %.1f / %.2f ms
+Streaming tasks/deferred: %d / %d
 """ % [
 		position.x,
 		position.y,
@@ -83,9 +90,20 @@ BlockLight last: %.2f ms / %d chunks
 		world.get_active_particle_emitter_count(),
 		world.get_active_particle_budget(),
 		world.get_block_light_at_world_position(block_position),
+		world.get_sun_light_at_world_position(block_position),
+		maxi(world.get_block_light_at_world_position(block_position), world.get_sun_light_at_world_position(block_position)),
 		world.block_light_update_count,
 		float(world.block_light_last_update_usec) / 1000.0,
-		world.block_light_last_changed_chunks
+		world.block_light_last_changed_chunks,
+		world.sunlight_update_count,
+		float(world.sunlight_last_update_usec) / 1000.0,
+		world.sunlight_last_changed_chunks,
+		float(world.sunlight_last_removal_usec) / 1000.0,
+		float(world.sunlight_last_propagation_usec) / 1000.0,
+		world.streaming_main_thread_budget_ms,
+		float(world.streaming_main_used_usec) / 1000.0,
+		world.streaming_main_tasks_executed,
+		world.streaming_main_deferred_tasks
 	]
 
 

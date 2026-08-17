@@ -3,8 +3,11 @@ extends MeshInstance3D
 
 const SIZE_XZ := ChunkData.SIZE_XZ
 const HEIGHT := ChunkData.HEIGHT
-const COLLISION_SECTION_HEIGHT := ChunkMesher.COLLISION_SECTION_HEIGHT
-const COLLISION_SECTION_COUNT := ChunkMesher.COLLISION_SECTION_COUNT
+const COLLISION_REGION_SIZE := ChunkMesher.COLLISION_REGION_SIZE
+const COLLISION_REGION_COUNT_X := ChunkMesher.COLLISION_REGION_COUNT_X
+const COLLISION_REGION_COUNT_Y := ChunkMesher.COLLISION_REGION_COUNT_Y
+const COLLISION_REGION_COUNT_Z := ChunkMesher.COLLISION_REGION_COUNT_Z
+const COLLISION_REGION_COUNT := ChunkMesher.COLLISION_REGION_COUNT
 
 var world: World
 
@@ -14,7 +17,7 @@ var data := ChunkData.new()
 var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
 var collision_builder := ChunkCollisionBuilder.new()
-var collision_section_mesh_data: Array[Dictionary] = []
+var collision_unit_data: Array[Dictionary] = []
 var rendered_face_count: int = 0
 var last_special_blocks_sync_usec: int = 0
 var last_special_blocks_created: int = 0
@@ -137,12 +140,16 @@ func rebuild_mesh() -> void:
 
 func build_mesh_only() -> void:
 	mesh = mesher.build(data, Callable(self, "get_neighbor_block"))
-	collision_section_mesh_data = mesher.last_collision_sections
+	collision_unit_data = mesher.last_collision_units
 	rendered_face_count = 0 if mesh == null or mesh.get_surface_count() == 0 else mesh.surface_get_array_len(0) / 4
 
 
 func apply_mesh_data(mesh_data: Dictionary) -> void:
-	collision_section_mesh_data = mesh_data["collision_sections"]
+	if collision_unit_data.size() != COLLISION_REGION_COUNT:
+		collision_unit_data.resize(COLLISION_REGION_COUNT)
+	for unit in mesh_data.get("collision_units", []):
+		var unit_data: Dictionary = unit
+		collision_unit_data[int(unit_data["unit_index"])] = unit_data
 	mesh = mesher.create_mesh(mesh_data)
 	rendered_face_count = (mesh_data["vertices"] as PackedVector3Array).size() / 4
 
@@ -152,18 +159,18 @@ func build_collision_only() -> void:
 
 
 func build_collision_section(section: int) -> void:
-	collision_builder.rebuild_section(self, section, get_collision_section_mesh_data(section))
+	collision_builder.rebuild_section(self, section, get_collision_unit_data(section))
 
 
-func get_collision_section_mesh_data(section: int) -> Dictionary:
-	if section < 0 or section >= collision_section_mesh_data.size():
+func get_collision_unit_data(section: int) -> Dictionary:
+	if section < 0 or section >= collision_unit_data.size():
 		return {
-			"vertices": PackedVector3Array(),
-			"normals": PackedVector3Array(),
-			"uvs": PackedVector2Array(),
-			"indices": PackedInt32Array(),
+			"centers": PackedVector3Array(),
+			"sizes": PackedVector3Array(),
+			"solid_voxels": 0,
+			"worker_usec": 0,
 		}
-	return collision_section_mesh_data[section]
+	return collision_unit_data[section]
 
 
 func remove_block(position: Vector3i) -> int:

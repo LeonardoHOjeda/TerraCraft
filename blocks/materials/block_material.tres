@@ -1,4 +1,4 @@
-[gd_resource type="ShaderMaterial" load_steps=3 format=3 uid="uid://dk6pr0xp3x3ps"]
+[gd_resource type="ShaderMaterial" format=3 uid="uid://dk6pr0xp3x3ps"]
 
 [ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="1_3b6p3"]
 
@@ -9,16 +9,23 @@ render_mode depth_draw_opaque, cull_back;
 uniform sampler2D atlas_texture : source_color, filter_nearest, repeat_disable;
 uniform vec3 block_light_tint : source_color = vec3(1.0, 0.58, 0.26);
 uniform float block_light_strength = 0.82;
+uniform vec3 sun_light_tint : source_color = vec3(0.92, 0.97, 1.0);
+uniform float sun_light_strength = 0.38;
 
 void fragment() {
 	vec4 tex = texture(atlas_texture, UV);
 	ALBEDO = tex.rgb;
-	EMISSION = tex.rgb * COLOR.rgb * block_light_tint * block_light_strength;
+	vec3 block_emission = tex.rgb * COLOR.r * block_light_tint * block_light_strength;
+	vec3 sun_emission = tex.rgb * COLOR.g * sun_light_tint * sun_light_strength;
+	EMISSION = max(block_emission, sun_emission);
 }
 "
 
 [resource]
+render_priority = 0
 shader = SubResource("Shader_block_light")
 shader_parameter/atlas_texture = ExtResource("1_3b6p3")
-shader_parameter/block_light_tint = Vector3(1, 0.58, 0.26)
+shader_parameter/block_light_tint = Color(1, 0.58, 0.26, 1)
 shader_parameter/block_light_strength = 0.82
+shader_parameter/sun_light_tint = Color(0.92, 0.97, 1, 1)
+shader_parameter/sun_light_strength = 0.38

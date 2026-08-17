@@ -18,6 +18,8 @@ const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 @export_range(1, 40, 1) var unload_distance: int = 4
 @export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
 @export_range(1, 8, 1) var max_background_jobs: int = 2
+@export_range(0.5, 20.0, 0.5) var streaming_main_thread_budget_ms: float = 4.0
+@export var log_streaming_main_thread_frames: bool = false
 @export var log_chunk_timings: bool = true
 @export var log_chunk_load_profile: bool = false
 @export_range(1, 100, 1) var timing_samples_to_log: int = 12
@@ -81,11 +83,21 @@ var timing_samples_logged: int = 0
 var block_light_update_count: int = 0
 var block_light_last_update_usec: int = 0
 var block_light_last_changed_chunks: int = 0
+var sunlight_update_count: int = 0
+var sunlight_last_update_usec: int = 0
+var sunlight_last_removal_usec: int = 0
+var sunlight_last_propagation_usec: int = 0
+var sunlight_last_changed_chunks: int = 0
 var mesh_last_worker_usec: int = 0
 var mesh_last_apply_usec: int = 0
 var mesh_last_face_count: int = 0
 var current_player_chunk := INVALID_CHUNK_POSITION
 var player: Node3D
+var streaming_main_used_usec: int = 0
+var streaming_main_tasks_executed: int = 0
+var streaming_main_deferred_tasks: int = 0
+var streaming_main_last_tasks: Array[String] = []
+var streaming_main_frame_started_usec: int = 0
 
 
 func _ready() -> void:
@@ -117,11 +129,65 @@ func _process(_delta: float) -> void:
 		current_player_chunk = new_player_chunk
 		update_streaming_targets()
 
+	begin_streaming_main_frame()
 	collect_finished_jobs()
+	enqueue_due_gameplay_collisions()
+	process_main_thread_queue(true)
+	start_background_jobs()
 	process_one_pending_generation_result()
 	start_background_jobs()
-	enqueue_due_gameplay_collisions()
-	process_main_thread_queue()
+	process_main_thread_queue(false)
+	finish_streaming_main_frame()
+
+
+func begin_streaming_main_frame() -> void:
+	streaming_main_frame_started_usec = Time.get_ticks_usec()
+	streaming_main_used_usec = 0
+	streaming_main_tasks_executed = 0
+	streaming_main_last_tasks.clear()
+
+
+func streaming_budget_reached() -> bool:
+	if streaming_main_tasks_executed == 0:
+		return false
+	return (
+		Time.get_ticks_usec() - streaming_main_frame_started_usec
+		>= roundi(streaming_main_thread_budget_ms * 1000.0)
+	)
+
+
+func record_streaming_main_task(task_name: String) -> void:
+	streaming_main_tasks_executed += 1
+	streaming_main_last_tasks.append(task_name)
+	streaming_main_used_usec = Time.get_ticks_usec() - streaming_main_frame_started_usec
+
+
+func finish_streaming_main_frame() -> void:
+	streaming_main_used_usec = Time.get_ticks_usec() - streaming_main_frame_started_usec
+	streaming_main_deferred_tasks = count_deferred_streaming_main_tasks()
+	if log_streaming_main_thread_frames and streaming_main_tasks_executed > 0:
+		print(
+			"Frame %d streaming main: %.3f ms | %s | deferred %d"
+			% [
+				Engine.get_process_frames(),
+				float(streaming_main_used_usec) / 1000.0,
+				", ".join(streaming_main_last_tasks),
+				streaming_main_deferred_tasks,
+			]
+		)
+
+
+func count_deferred_streaming_main_tasks() -> int:
+	var count := pending_generation_results.size()
+	for chunk_position in work_queue:
+		if not chunk_stages.has(chunk_position):
+			continue
+		var stage: int = chunk_stages[chunk_position]
+		if stage in [ChunkStage.GENERATE_DATA, ChunkStage.BUILD_MESH_DATA, ChunkStage.APPLY_MESH]:
+			count += 1
+		elif stage == ChunkStage.BUILD_COLLISION:
+			count += maxi(1, (pending_collision_sections.get(chunk_position, []) as Array).size())
+	return count
 
 
 func resolve_player() -> void:
@@ -159,6 +225,9 @@ func update_streaming_targets() -> void:
 				"collision_usec": 0,
 				"collision_sections_usec": {},
 				"collision_section_frames": {},
+				"collision_unit_worker_usec": {},
+				"collision_unit_solid_voxels": {},
+				"collision_unit_box_counts": {},
 				"apply_data_main_usec": 0,
 				"special_blocks_main_usec": 0,
 				"special_blocks_created": 0,
@@ -172,6 +241,19 @@ func update_streaming_targets() -> void:
 				"snapshot_data_copy_usec": 0,
 				"snapshot_block_borders_usec": 0,
 				"snapshot_light_borders_usec": 0,
+				"sunlight_vertical_worker_usec": 0,
+				"sunlight_local_bfs_worker_usec": 0,
+				"sunlight_direct_voxels": 0,
+				"sunlight_seed_count": 0,
+				"sunlight_legacy_seed_count": 0,
+				"sunlight_processed_voxels": 0,
+				"sunlight_queue_pushes": 0,
+				"sunlight_duplicate_rejections": 0,
+				"sunlight_neighbor_operations": 0,
+				"sunlight_reconcile_usec": 0,
+				"sunlight_bfs_usec": 0,
+				"sunlight_init_usec": 0,
+				"sunlight_changed_neighbor_chunks": 0,
 			}
 			enqueue_work(chunk_position)
 
@@ -194,6 +276,8 @@ func enqueue_work(chunk_position: Vector2i) -> void:
 func start_background_jobs() -> void:
 	var started := 0
 	while active_jobs.size() < max_background_jobs and started < streaming_steps_per_frame:
+		if streaming_budget_reached():
+			return
 		var chunk_position := pop_work_for_stages([ChunkStage.GENERATE_DATA, ChunkStage.BUILD_MESH_DATA])
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
@@ -208,6 +292,7 @@ func start_background_jobs() -> void:
 			worker = ChunkGenerator.new()
 			callable = Callable(worker, "generate_data").bind(parameters)
 			chunk_stages[chunk_position] = ChunkStage.GENERATING
+			record_streaming_main_task("generation_dispatch(%d,%d)" % [chunk_position.x, chunk_position.y])
 		else:
 			var snapshot_started_at := Time.get_ticks_usec()
 			var snapshot := create_meshing_snapshot(chunk_position)
@@ -215,6 +300,7 @@ func start_background_jobs() -> void:
 			worker = ChunkMesher.new()
 			callable = Callable(worker, "build_mesh_data").bind(snapshot)
 			chunk_stages[chunk_position] = ChunkStage.MESHING
+			record_streaming_main_task("snapshot(%d,%d)" % [chunk_position.x, chunk_position.y])
 
 		var thread := Thread.new()
 		var error := thread.start(callable, Thread.PRIORITY_NORMAL)
@@ -238,6 +324,8 @@ func collect_finished_jobs() -> void:
 		var thread: Thread = job["thread"]
 		if thread.is_alive():
 			continue
+		if streaming_budget_reached():
+			return
 		var result: Dictionary = thread.wait_to_finish()
 		active_jobs.remove_at(index)
 		var chunk_position: Vector2i = job["chunk_position"]
@@ -255,10 +343,13 @@ func collect_finished_jobs() -> void:
 			pending_mesh_data[chunk_position] = result
 			chunk_stages[chunk_position] = ChunkStage.APPLY_MESH
 			enqueue_work(chunk_position)
+		record_streaming_main_task("collect_worker_result(%d,%d)" % [chunk_position.x, chunk_position.y])
 
 
 func process_one_pending_generation_result() -> void:
 	if pending_generation_results.is_empty():
+		return
+	if streaming_budget_reached():
 		return
 	pending_generation_results.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
@@ -279,31 +370,47 @@ func process_one_pending_generation_result() -> void:
 		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
 			continue
 		apply_generated_data(chunk_position, pending["result"])
+		record_streaming_main_task("apply_generated_data(%d,%d)" % [chunk_position.x, chunk_position.y])
 		return
 
 
-func process_main_thread_queue() -> void:
+func process_main_thread_queue(gameplay_only: bool) -> void:
 	var steps := 0
 	while steps < streaming_steps_per_frame:
-		var chunk_position := pop_work_for_stages([ChunkStage.APPLY_MESH, ChunkStage.BUILD_COLLISION])
+		if streaming_budget_reached():
+			return
+		var chunk_position := pop_work_for_stages(
+			[ChunkStage.APPLY_MESH, ChunkStage.BUILD_COLLISION], gameplay_only
+		)
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
 		if chunk_stages[chunk_position] == ChunkStage.APPLY_MESH:
 			apply_chunk_mesh(chunk_position)
+			record_streaming_main_task("apply_mesh(%d,%d)" % [chunk_position.x, chunk_position.y])
 		else:
+			var sections: Array = pending_collision_sections.get(chunk_position, [])
+			var section := int(sections[0]) if not sections.is_empty() else -1
+			var region := ChunkMesher.get_collision_region_coords(section)
 			build_chunk_collision(chunk_position)
+			record_streaming_main_task(
+				"collision(%d,%d)[region %d,%d,%d]"
+				% [chunk_position.x, chunk_position.y, region.x, region.y, region.z]
+			)
 		steps += 1
 
 
-func pop_work_for_stages(stages: Array) -> Vector2i:
+func pop_work_for_stages(stages: Array, gameplay_only: bool = false) -> Vector2i:
 	sort_work_queue()
 	for index in work_queue.size():
 		var chunk_position := work_queue[index]
 		if not chunk_stages.has(chunk_position):
 			queued_work.erase(chunk_position)
 			work_queue.remove_at(index)
-			return pop_work_for_stages(stages)
-		if stages.has(chunk_stages[chunk_position]):
+			return pop_work_for_stages(stages, gameplay_only)
+		if (
+			stages.has(chunk_stages[chunk_position])
+			and (not gameplay_only or gameplay_rebuilds.has(chunk_position))
+		):
 			work_queue.remove_at(index)
 			queued_work.erase(chunk_position)
 			return chunk_position
@@ -383,6 +490,19 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 		Time.get_ticks_usec() - apply_started_at - chunk.last_special_blocks_sync_usec
 	)
 	chunk_timings[chunk_position]["apply_data_frame"] = Engine.get_process_frames()
+	chunk_timings[chunk_position]["sunlight_vertical_worker_usec"] = int(result.get("sunlight_vertical_worker_usec", 0))
+	chunk_timings[chunk_position]["sunlight_local_bfs_worker_usec"] = int(result.get("sunlight_local_bfs_worker_usec", 0))
+	for profile_key in [
+		"sunlight_direct_voxels",
+		"sunlight_seed_count",
+		"sunlight_legacy_seed_count",
+		"sunlight_processed_voxels",
+		"sunlight_queue_pushes",
+		"sunlight_duplicate_rejections",
+		"sunlight_neighbor_operations",
+	]:
+		chunk_timings[chunk_position][profile_key] = int(result.get(profile_key, 0))
+	var sun_changed_chunks := initialize_chunk_sunlight(chunk)
 	var light_changed_chunks := initialize_chunk_block_light(chunk)
 	if log_chunk_override_application and int(result.get("override_count", 0)) > 0:
 		print(
@@ -393,13 +513,19 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	chunk_timings[chunk_position]["generation_worker_usec"] = result["worker_usec"]
 	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
 	enqueue_work(chunk_position)
-	var neighbor_remesh_requests := 0
+	var sun_neighbor_remesh_requests := 0
+	for changed_position in sun_changed_chunks:
+		if changed_position != chunk_position:
+			request_chunk_rebuild(changed_position)
+			sun_neighbor_remesh_requests += 1
+	var block_neighbor_remesh_requests := 0
 	for changed_position in light_changed_chunks:
 		if changed_position != chunk_position:
 			request_chunk_rebuild(changed_position)
-			neighbor_remesh_requests += 1
-	chunk_timings[chunk_position]["blocklight_changed_neighbor_chunks"] = neighbor_remesh_requests
-	chunk_timings[chunk_position]["blocklight_neighbor_remesh_requests"] = neighbor_remesh_requests
+			block_neighbor_remesh_requests += 1
+	chunk_timings[chunk_position]["blocklight_changed_neighbor_chunks"] = block_neighbor_remesh_requests
+	chunk_timings[chunk_position]["blocklight_neighbor_remesh_requests"] = block_neighbor_remesh_requests
+	chunk_timings[chunk_position]["sunlight_changed_neighbor_chunks"] = sun_neighbor_remesh_requests
 
 
 func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
@@ -416,6 +542,10 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	var positive_x_light := create_empty_light_boundary()
 	var negative_z_light := create_empty_light_boundary()
 	var positive_z_light := create_empty_light_boundary()
+	var negative_x_sun := create_empty_light_boundary()
+	var positive_x_sun := create_empty_light_boundary()
+	var negative_z_sun := create_empty_light_boundary()
+	var positive_z_sun := create_empty_light_boundary()
 	copy_neighbor_x_boundary(negative_x, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_x_boundary(positive_x, chunk_position + Vector2i.RIGHT, 0)
 	copy_neighbor_z_boundary(negative_z, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
@@ -426,6 +556,10 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	copy_neighbor_x_light_boundary(positive_x_light, chunk_position + Vector2i.RIGHT, 0)
 	copy_neighbor_z_light_boundary(negative_z_light, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_z_light_boundary(positive_z_light, chunk_position + Vector2i.DOWN, 0)
+	copy_neighbor_x_sun_boundary(negative_x_sun, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_x_sun_boundary(positive_x_sun, chunk_position + Vector2i.RIGHT, 0)
+	copy_neighbor_z_sun_boundary(negative_z_sun, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_z_sun_boundary(positive_z_sun, chunk_position + Vector2i.DOWN, 0)
 	var light_borders_elapsed := Time.get_ticks_usec() - light_borders_started_at
 	if chunk_timings.has(chunk_position):
 		chunk_timings[chunk_position]["snapshot_data_copy_usec"] = data_copy_elapsed
@@ -442,7 +576,33 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 		"positive_x_light": positive_x_light,
 		"negative_z_light": negative_z_light,
 		"positive_z_light": positive_z_light,
+		"negative_x_sun": negative_x_sun,
+		"positive_x_sun": positive_x_sun,
+		"negative_z_sun": negative_z_sun,
+		"positive_z_sun": positive_z_sun,
+		"collision_unit_indices": get_snapshot_collision_unit_indices(chunk_position),
 	}
+
+
+func get_snapshot_collision_unit_indices(chunk_position: Vector2i) -> Array[int]:
+	if initial_chunks.has(chunk_position):
+		var all_units: Array[int] = []
+		for unit_index in Chunk.COLLISION_REGION_COUNT:
+			all_units.append(unit_index)
+		return all_units
+	if not gameplay_rebuilds.has(chunk_position):
+		return []
+	var requested: Dictionary = {}
+	var deadlines: Dictionary = gameplay_collision_deadlines.get(chunk_position, {})
+	for unit_index in deadlines:
+		requested[int(unit_index)] = true
+	for unit_index in pending_collision_sections.get(chunk_position, []):
+		requested[int(unit_index)] = true
+	var units: Array[int] = []
+	for unit_index in requested:
+		units.append(unit_index)
+	units.sort()
+	return units
 
 
 func create_empty_boundary() -> PackedInt32Array:
@@ -495,6 +655,24 @@ func copy_neighbor_z_light_boundary(target: PackedByteArray, neighbor_position: 
 			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block_light(Vector3i(x, y, source_z))
 
 
+func copy_neighbor_x_sun_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_x: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for z in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_sun_light(Vector3i(source_x, y, z))
+
+
+func copy_neighbor_z_sun_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_z: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for x in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_sun_light(Vector3i(x, y, source_z))
+
+
 func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
 	if chunk == null or not pending_mesh_data.has(chunk_position):
@@ -502,6 +680,19 @@ func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 	var started_at := Time.get_ticks_usec()
 	var mesh_data: Dictionary = pending_mesh_data[chunk_position]
 	chunk.apply_mesh_data(mesh_data)
+	var collision_worker_timings: Dictionary = {}
+	var collision_solid_counts: Dictionary = {}
+	var collision_box_counts: Dictionary = {}
+	var collision_units: Array = mesh_data.get("collision_units", [])
+	for unit in collision_units:
+		var unit_data: Dictionary = unit
+		var unit_index := int(unit_data["unit_index"])
+		collision_worker_timings[unit_index] = int(unit_data.get("worker_usec", 0))
+		collision_solid_counts[unit_index] = int(unit_data.get("solid_voxels", 0))
+		collision_box_counts[unit_index] = (unit_data.get("centers", PackedVector3Array()) as PackedVector3Array).size()
+	chunk_timings[chunk_position]["collision_unit_worker_usec"] = collision_worker_timings
+	chunk_timings[chunk_position]["collision_unit_solid_voxels"] = collision_solid_counts
+	chunk_timings[chunk_position]["collision_unit_box_counts"] = collision_box_counts
 	mesh_last_worker_usec = int(mesh_data.get("worker_usec", 0))
 	mesh_last_face_count = chunk.rendered_face_count
 	pending_mesh_data.erase(chunk_position)
@@ -522,9 +713,9 @@ func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 		else:
 			chunk_stages[chunk_position] = ChunkStage.READY
 	else:
-		set_all_collision_sections_pending(chunk_position)
-		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
-		enqueue_work(chunk_position)
+		# Neighbor/light-only remeshes do not change voxel ownership, so greedy
+		# terrain boxes remain valid and no physics work is needed.
+		chunk_stages[chunk_position] = ChunkStage.READY
 
 
 func enqueue_due_gameplay_collisions() -> void:
@@ -551,7 +742,7 @@ func enqueue_due_gameplay_collisions() -> void:
 
 func set_all_collision_sections_pending(chunk_position: Vector2i) -> void:
 	var sections: Array[int] = []
-	for section in Chunk.COLLISION_SECTION_COUNT:
+	for section in Chunk.COLLISION_REGION_COUNT:
 		sections.append(section)
 	pending_collision_sections[chunk_position] = sections
 
@@ -578,6 +769,7 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 	var sections: Array = pending_collision_sections[chunk_position]
 	var section: int = sections.pop_front()
 	pending_collision_sections[chunk_position] = sections
+	var unit_data := chunk.get_collision_unit_data(section)
 	var started_at := Time.get_ticks_usec()
 	chunk.build_collision_section(section)
 	var elapsed := Time.get_ticks_usec() - started_at
@@ -595,11 +787,18 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 			gameplay_collision_section_counts.get(chunk_position, 0)
 		) + 1
 	if log_collision_section_timings:
-		var min_y := section * Chunk.COLLISION_SECTION_HEIGHT
-		var max_y := min_y + Chunk.COLLISION_SECTION_HEIGHT - 1
+		var region := ChunkMesher.get_collision_region_coords(section)
 		print(
-			"Collision section (%d,%d)[Y%d-%d]: %.2f ms"
-			% [chunk_position.x, chunk_position.y, min_y, max_y, float(elapsed) / 1000.0]
+			"Collision (%d,%d) unit %d: %d solid -> %d boxes | worker %.3f ms | apply %.3f ms"
+			% [
+				chunk_position.x,
+				chunk_position.y,
+				region.y,
+				int(unit_data.get("solid_voxels", 0)),
+				(unit_data.get("centers", PackedVector3Array()) as PackedVector3Array).size(),
+				float(unit_data.get("worker_usec", 0)) / 1000.0,
+				float(elapsed) / 1000.0,
+			]
 		)
 
 	if has_pending_collision_sections(chunk_position):
@@ -657,11 +856,15 @@ func print_chunk_load_profile(chunk_position: Vector2i) -> void:
 	var timing: Dictionary = chunk_timings.get(chunk_position, {})
 	var collision_sections: Dictionary = timing.get("collision_sections_usec", {})
 	var collision_frames: Dictionary = timing.get("collision_section_frames", {})
+	var collision_worker_timings: Dictionary = timing.get("collision_unit_worker_usec", {})
+	var collision_solid_counts: Dictionary = timing.get("collision_unit_solid_voxels", {})
+	var collision_box_counts: Dictionary = timing.get("collision_unit_box_counts", {})
 	var main_total_usec := (
 		int(timing.get("generation_dispatch_usec", 0))
 		+ int(timing.get("apply_data_main_usec", 0))
 		+ int(timing.get("special_blocks_main_usec", 0))
 		+ int(timing.get("blocklight_init_usec", 0))
+		+ int(timing.get("sunlight_init_usec", 0))
 		+ int(timing.get("snapshot_usec", 0))
 		+ int(timing.get("apply_mesh_usec", 0))
 		+ int(timing.get("collision_usec", 0))
@@ -670,6 +873,13 @@ func print_chunk_load_profile(chunk_position: Vector2i) -> void:
 		"Chunk (%d,%d) load profile:" % [chunk_position.x, chunk_position.y],
 		"  MAIN apply data/setup: %.3f ms (frame %d)" % [float(timing.get("apply_data_main_usec", 0)) / 1000.0, int(timing.get("apply_data_frame", -1))],
 		"  MAIN special blocks: %.3f ms (%d created)" % [float(timing.get("special_blocks_main_usec", 0)) / 1000.0, int(timing.get("special_blocks_created", 0))],
+		"  BACKGROUND SunLight vertical: %.3f ms" % [float(timing.get("sunlight_vertical_worker_usec", 0)) / 1000.0],
+		"  BACKGROUND SunLight local BFS: %.3f ms" % [float(timing.get("sunlight_local_bfs_worker_usec", 0)) / 1000.0],
+		"    direct/legacy seeds/new seeds/processed: %d / %d / %d / %d" % [int(timing.get("sunlight_direct_voxels", 0)), int(timing.get("sunlight_legacy_seed_count", 0)), int(timing.get("sunlight_seed_count", 0)), int(timing.get("sunlight_processed_voxels", 0))],
+		"    queue pushes/rejected/neighbor ops: %d / %d / %d" % [int(timing.get("sunlight_queue_pushes", 0)), int(timing.get("sunlight_duplicate_rejections", 0)), int(timing.get("sunlight_neighbor_operations", 0))],
+		"  MAIN SunLight border reconcile: %.3f ms" % [float(timing.get("sunlight_reconcile_usec", 0)) / 1000.0],
+		"  MAIN SunLight BFS: %.3f ms" % [float(timing.get("sunlight_bfs_usec", 0)) / 1000.0],
+		"  MAIN SunLight total: %.3f ms / %d neighbor chunks" % [float(timing.get("sunlight_init_usec", 0)) / 1000.0, int(timing.get("sunlight_changed_neighbor_chunks", 0))],
 		"  MAIN BlockLight clear: %.3f ms" % [float(timing.get("blocklight_clear_usec", 0)) / 1000.0],
 		"  MAIN BlockLight source scan: %.3f ms" % [float(timing.get("blocklight_source_scan_usec", 0)) / 1000.0],
 		"  MAIN BlockLight border reconcile: %.3f ms" % [float(timing.get("blocklight_border_reconcile_usec", 0)) / 1000.0],
@@ -682,10 +892,18 @@ func print_chunk_load_profile(chunk_position: Vector2i) -> void:
 		"  MAIN snapshot total: %.3f ms (frame %d)" % [float(timing.get("snapshot_usec", 0)) / 1000.0, int(timing.get("snapshot_frame", -1))],
 		"  MAIN apply ArrayMesh: %.3f ms (frame %d)" % [float(timing.get("apply_mesh_usec", 0)) / 1000.0, int(timing.get("apply_mesh_frame", -1))],
 	]
-	for section in range(Chunk.COLLISION_SECTION_COUNT):
+	for section in range(Chunk.COLLISION_REGION_COUNT):
+		var region := ChunkMesher.get_collision_region_coords(section)
 		lines.append(
-			"  MAIN collision section %d: %.3f ms (frame %d)"
-			% [section, float(collision_sections.get(section, 0)) / 1000.0, int(collision_frames.get(section, -1))]
+			"  collision unit Y%d: %d solid -> %d boxes | worker %.3f ms | MAIN apply %.3f ms (frame %d)"
+			% [
+				region.y,
+				int(collision_solid_counts.get(section, 0)),
+				int(collision_box_counts.get(section, 0)),
+				float(collision_worker_timings.get(section, 0)) / 1000.0,
+				float(collision_sections.get(section, 0)) / 1000.0,
+				int(collision_frames.get(section, -1)),
+			]
 		)
 	lines.append("  MAIN collision total: %.3f ms" % [float(timing.get("collision_usec", 0)) / 1000.0])
 	lines.append("  MAIN accumulated total: %.3f ms" % [float(main_total_usec) / 1000.0])
@@ -704,7 +922,7 @@ func print_gameplay_collision_stats(chunk_position: Vector2i) -> void:
 			int(gameplay_change_counts.get(chunk_position, 0)),
 			int(gameplay_visual_rebuild_counts.get(chunk_position, 0)),
 			int(gameplay_collision_section_counts.get(chunk_position, 0)),
-			Chunk.COLLISION_SECTION_COUNT,
+			Chunk.COLLISION_REGION_COUNT,
 			float(timing.get("collision_usec", 0)) / 1000.0,
 		]
 	)
@@ -743,6 +961,7 @@ func print_chunk_timing(chunk_position: Vector2i, is_rebuild: bool) -> void:
 func unload_chunk(chunk_position: Vector2i) -> void:
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
 	var departed_sources: Array[Dictionary] = []
+	var departed_sunlight: Array[Dictionary] = []
 	if chunk != null:
 		for x in Chunk.SIZE_XZ:
 			for y in Chunk.HEIGHT:
@@ -751,6 +970,14 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 					var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
 					if emission > 0:
 						departed_sources.append({"position": chunk.local_to_world(local_position), "level": emission})
+					if (
+						(x == 0 or x == Chunk.SIZE_XZ - 1 or z == 0 or z == Chunk.SIZE_XZ - 1)
+						and chunk.data.get_sun_light(local_position) > 0
+					):
+						departed_sunlight.append({
+							"position": chunk.local_to_world(local_position),
+							"level": chunk.data.get_sun_light(local_position),
+						})
 		# Future persistence hook: save modified block overrides before removing this chunk.
 		chunk.queue_free()
 	loaded_chunks.erase(chunk_position)
@@ -758,6 +985,10 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 		if pending_generation_results[index]["chunk_position"] == chunk_position:
 			pending_generation_results.remove_at(index)
 	var light_changed_chunks := remove_departed_light_sources(departed_sources)
+	var sun_changed_chunks: Dictionary = {}
+	var sun_propagation_queue: Array[Vector3i] = []
+	process_sunlight_removal(departed_sunlight, sun_propagation_queue, sun_changed_chunks)
+	propagate_sunlight(sun_propagation_queue, sun_changed_chunks)
 	chunk_stages.erase(chunk_position)
 	initial_chunks.erase(chunk_position)
 	chunk_timings.erase(chunk_position)
@@ -772,6 +1003,8 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 	gameplay_collision_section_counts.erase(chunk_position)
 	request_cardinal_neighbor_rebuilds(chunk_position)
 	for changed_position in light_changed_chunks:
+		request_chunk_rebuild(changed_position)
+	for changed_position in sun_changed_chunks:
 		request_chunk_rebuild(changed_position)
 
 
@@ -888,6 +1121,75 @@ func get_block_light_at_world_position(position: Vector3i) -> int:
 	if chunk == null:
 		return 0
 	return chunk.data.get_block_light(chunk.world_to_local(position))
+
+
+func get_sun_light_at_world_position(position: Vector3i) -> int:
+	if position.y >= Chunk.HEIGHT:
+		return 15
+	var chunk := get_chunk_at_world_position(position)
+	if chunk == null:
+		return 0
+	return chunk.data.get_sun_light(chunk.world_to_local(position))
+
+
+func initialize_chunk_sunlight(chunk: Chunk) -> Dictionary:
+	var started_at := Time.get_ticks_usec()
+	var changed_chunks: Dictionary = {}
+	var propagation_queue: Array[Vector3i] = []
+	var reconcile_started_at := Time.get_ticks_usec()
+	seed_sunlight_across_borders(chunk, propagation_queue)
+	var reconcile_elapsed := Time.get_ticks_usec() - reconcile_started_at
+	var bfs_started_at := Time.get_ticks_usec()
+	propagate_sunlight(propagation_queue, changed_chunks)
+	var bfs_elapsed := Time.get_ticks_usec() - bfs_started_at
+	if chunk_timings.has(chunk.chunk_position):
+		chunk_timings[chunk.chunk_position]["sunlight_reconcile_usec"] = reconcile_elapsed
+		chunk_timings[chunk.chunk_position]["sunlight_bfs_usec"] = bfs_elapsed
+		chunk_timings[chunk.chunk_position]["sunlight_init_usec"] = Time.get_ticks_usec() - started_at
+	return changed_chunks
+
+
+func seed_sunlight_across_borders(chunk: Chunk, propagation_queue: Array[Vector3i]) -> void:
+	seed_sunlight_x_pair(chunk, chunk.chunk_position + Vector2i.LEFT, 0, Chunk.SIZE_XZ - 1, propagation_queue)
+	seed_sunlight_x_pair(chunk, chunk.chunk_position + Vector2i.RIGHT, Chunk.SIZE_XZ - 1, 0, propagation_queue)
+	seed_sunlight_z_pair(chunk, chunk.chunk_position + Vector2i.UP, 0, Chunk.SIZE_XZ - 1, propagation_queue)
+	seed_sunlight_z_pair(chunk, chunk.chunk_position + Vector2i.DOWN, Chunk.SIZE_XZ - 1, 0, propagation_queue)
+
+
+func seed_sunlight_x_pair(chunk: Chunk, neighbor_position: Vector2i, local_x: int, neighbor_x: int, queue: Array[Vector3i]) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	var chunk_origin := Vector3i(chunk.chunk_position.x * Chunk.SIZE_XZ, 0, chunk.chunk_position.y * Chunk.SIZE_XZ)
+	var neighbor_origin := Vector3i(neighbor_position.x * Chunk.SIZE_XZ, 0, neighbor_position.y * Chunk.SIZE_XZ)
+	for y in Chunk.HEIGHT:
+		for z in Chunk.SIZE_XZ:
+			var local := Vector3i(local_x, y, z)
+			var neighbor_local := Vector3i(neighbor_x, y, z)
+			var local_level := chunk.data.get_sun_light(local)
+			var neighbor_level := neighbor.data.get_sun_light(neighbor_local)
+			if local_level - 1 > neighbor_level and BlockRegistry.is_light_transparent(neighbor.data.get_block(neighbor_local)):
+				queue.append(chunk_origin + local)
+			if neighbor_level - 1 > local_level and BlockRegistry.is_light_transparent(chunk.data.get_block(local)):
+				queue.append(neighbor_origin + neighbor_local)
+
+
+func seed_sunlight_z_pair(chunk: Chunk, neighbor_position: Vector2i, local_z: int, neighbor_z: int, queue: Array[Vector3i]) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	var chunk_origin := Vector3i(chunk.chunk_position.x * Chunk.SIZE_XZ, 0, chunk.chunk_position.y * Chunk.SIZE_XZ)
+	var neighbor_origin := Vector3i(neighbor_position.x * Chunk.SIZE_XZ, 0, neighbor_position.y * Chunk.SIZE_XZ)
+	for y in Chunk.HEIGHT:
+		for x in Chunk.SIZE_XZ:
+			var local := Vector3i(x, y, local_z)
+			var neighbor_local := Vector3i(x, y, neighbor_z)
+			var local_level := chunk.data.get_sun_light(local)
+			var neighbor_level := neighbor.data.get_sun_light(neighbor_local)
+			if local_level - 1 > neighbor_level and BlockRegistry.is_light_transparent(neighbor.data.get_block(neighbor_local)):
+				queue.append(chunk_origin + local)
+			if neighbor_level - 1 > local_level and BlockRegistry.is_light_transparent(chunk.data.get_block(local)):
+				queue.append(neighbor_origin + neighbor_local)
 
 
 func set_block_light_at_world_position(position: Vector3i, level: int, changed_chunks: Dictionary) -> bool:
@@ -1065,6 +1367,127 @@ func propagate_block_light(propagation_queue: Array[Vector3i], changed_chunks: D
 			queue_indices.append(neighbor_chunk.data.get_index(neighbor_local))
 
 
+func propagate_sunlight(propagation_queue: Array[Vector3i], changed_chunks: Dictionary) -> void:
+	var queue_chunks: Array[Chunk] = []
+	var queue_indices := PackedInt32Array()
+	for seed_position in propagation_queue:
+		var seed_chunk := get_chunk_at_world_position(seed_position)
+		if seed_chunk == null:
+			continue
+		var seed_origin := Vector3i(seed_chunk.chunk_position.x * Chunk.SIZE_XZ, 0, seed_chunk.chunk_position.y * Chunk.SIZE_XZ)
+		var seed_local := seed_position - seed_origin
+		if seed_chunk.data.is_valid_position(seed_local):
+			queue_chunks.append(seed_chunk)
+			queue_indices.append(seed_chunk.data.get_index(seed_local))
+	var index := 0
+	while index < queue_indices.size():
+		var source_chunk := queue_chunks[index]
+		var source_local := source_chunk.data.get_position_from_index(queue_indices[index])
+		index += 1
+		var level := source_chunk.data.get_sun_light(source_local)
+		if level <= 1:
+			continue
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor_local := source_local + direction
+			var neighbor_chunk: Chunk = source_chunk
+			if neighbor_local.y < 0 or neighbor_local.y >= Chunk.HEIGHT:
+				continue
+			var neighbor_chunk_position := source_chunk.chunk_position
+			if neighbor_local.x < 0:
+				neighbor_chunk_position += Vector2i.LEFT
+				neighbor_local.x = Chunk.SIZE_XZ - 1
+			elif neighbor_local.x >= Chunk.SIZE_XZ:
+				neighbor_chunk_position += Vector2i.RIGHT
+				neighbor_local.x = 0
+			elif neighbor_local.z < 0:
+				neighbor_chunk_position += Vector2i.UP
+				neighbor_local.z = Chunk.SIZE_XZ - 1
+			elif neighbor_local.z >= Chunk.SIZE_XZ:
+				neighbor_chunk_position += Vector2i.DOWN
+				neighbor_local.z = 0
+			if neighbor_chunk_position != source_chunk.chunk_position:
+				neighbor_chunk = loaded_chunks.get(neighbor_chunk_position) as Chunk
+				if neighbor_chunk == null:
+					continue
+			if not BlockRegistry.is_light_transparent(neighbor_chunk.data.get_block(neighbor_local)):
+				continue
+			var desired_level := level - 1
+			if desired_level <= neighbor_chunk.data.get_sun_light(neighbor_local):
+				continue
+			neighbor_chunk.data.set_sun_light(neighbor_local, desired_level)
+			changed_chunks[neighbor_chunk.chunk_position] = true
+			queue_chunks.append(neighbor_chunk)
+			queue_indices.append(neighbor_chunk.data.get_index(neighbor_local))
+
+
+func update_sunlight_after_change(world_position: Vector3i) -> Dictionary:
+	var started_at := Time.get_ticks_usec()
+	var changed_chunks: Dictionary = {}
+	var removal_queue: Array[Dictionary] = []
+	var propagation_queue: Array[Vector3i] = []
+	var chunk := get_chunk_at_world_position(world_position)
+	if chunk == null:
+		return changed_chunks
+	var local_changed := chunk.world_to_local(world_position)
+	var chunk_origin := Vector3i(chunk.chunk_position.x * Chunk.SIZE_XZ, 0, chunk.chunk_position.y * Chunk.SIZE_XZ)
+	var sky_open := true
+	for y in range(Chunk.HEIGHT - 1, -1, -1):
+		var local := Vector3i(local_changed.x, y, local_changed.z)
+		var block := chunk.data.get_block(local)
+		var should_be_direct := sky_open and BlockRegistry.is_light_transparent(block)
+		var was_direct := chunk.data.is_direct_sunlight(local)
+		var old_level := chunk.data.get_sun_light(local)
+		chunk.data.set_direct_sunlight(local, should_be_direct)
+		if should_be_direct:
+			if old_level < 15:
+				chunk.data.set_sun_light(local, 15)
+				changed_chunks[chunk.chunk_position] = true
+				propagation_queue.append(chunk_origin + local)
+		else:
+			if was_direct or (local == local_changed and old_level > 0 and not BlockRegistry.is_light_transparent(block)):
+				chunk.data.set_sun_light(local, 0)
+				changed_chunks[chunk.chunk_position] = true
+				removal_queue.append({"position": chunk_origin + local, "level": old_level})
+			sky_open = false
+	var removal_started_at := Time.get_ticks_usec()
+	process_sunlight_removal(removal_queue, propagation_queue, changed_chunks)
+	sunlight_last_removal_usec = Time.get_ticks_usec() - removal_started_at
+	var propagation_started_at := Time.get_ticks_usec()
+	propagate_sunlight(propagation_queue, changed_chunks)
+	sunlight_last_propagation_usec = Time.get_ticks_usec() - propagation_started_at
+	sunlight_update_count += 1
+	sunlight_last_update_usec = Time.get_ticks_usec() - started_at
+	sunlight_last_changed_chunks = changed_chunks.size()
+	return changed_chunks
+
+
+func process_sunlight_removal(removal_queue: Array[Dictionary], propagation_queue: Array[Vector3i], changed_chunks: Dictionary) -> void:
+	var index := 0
+	while index < removal_queue.size():
+		var entry: Dictionary = removal_queue[index]
+		index += 1
+		var position: Vector3i = entry["position"]
+		var removed_level: int = entry["level"]
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor_position := position + direction
+			var neighbor_chunk := get_chunk_at_world_position(neighbor_position)
+			if neighbor_chunk == null:
+				continue
+			var neighbor_local := neighbor_chunk.world_to_local(neighbor_position)
+			var neighbor_level := neighbor_chunk.data.get_sun_light(neighbor_local)
+			if neighbor_level <= 0:
+				continue
+			var source_level := 15 if neighbor_chunk.data.is_direct_sunlight(neighbor_local) else 0
+			if neighbor_level < removed_level and neighbor_level > source_level:
+				neighbor_chunk.data.set_sun_light(neighbor_local, source_level)
+				changed_chunks[neighbor_chunk.chunk_position] = true
+				removal_queue.append({"position": neighbor_position, "level": neighbor_level})
+				if source_level > 0:
+					propagation_queue.append(neighbor_position)
+			else:
+				propagation_queue.append(neighbor_position)
+
+
 func remove_departed_light_sources(sources: Array[Dictionary]) -> Dictionary:
 	var started_at := Time.get_ticks_usec()
 	var changed_chunks: Dictionary = {}
@@ -1187,9 +1610,11 @@ func fell_tree(start_position: Vector3i) -> bool:
 		break_torches_supported_by(position)
 		record_block_override(chunk, local_position)
 		modified_chunks[chunk.chunk_position] = true
-		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position.y)
+		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position)
 		for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
-			add_tree_rebuild_target(rebuild_sections, neighbor_position, local_position.y)
+			add_tree_neighbor_rebuild_target(
+				rebuild_sections, chunk.chunk_position, neighbor_position, local_position
+			)
 		var dropped_item := ItemRegistry.get_drop(broken_block)
 		if dropped_item != ItemRegistry.Item.NONE:
 			var drop_offset := Vector3(randf_range(-0.18, 0.18), 0.5, randf_range(-0.18, 0.18))
@@ -1207,13 +1632,28 @@ func fell_tree(start_position: Vector3i) -> bool:
 	return true
 
 
-func add_tree_rebuild_target(targets: Dictionary, chunk_position: Vector2i, local_y: int) -> void:
+func add_tree_rebuild_target(
+	targets: Dictionary, chunk_position: Vector2i, local_position: Vector3i
+) -> void:
 	if not loaded_chunks.has(chunk_position):
 		return
 	var sections: Dictionary = targets.get(chunk_position, {})
-	for section in get_affected_collision_sections(local_y):
+	for section in get_affected_collision_regions(local_position):
 		sections[section] = true
 	targets[chunk_position] = sections
+
+
+func add_tree_neighbor_rebuild_target(
+	targets: Dictionary,
+	source_chunk_position: Vector2i,
+	neighbor_chunk_position: Vector2i,
+	source_local_position: Vector3i
+) -> void:
+	if not loaded_chunks.has(neighbor_chunk_position):
+		return
+	# Greedy boxes contain only voxels owned by their chunk, so border visibility
+	# requires a visual remesh but never a physics rebuild in the neighbor.
+	targets[neighbor_chunk_position] = targets.get(neighbor_chunk_position, {})
 
 
 func apply_trees_to_chunk(chunk: Chunk) -> void:
@@ -1345,37 +1785,31 @@ func get_active_particle_budget() -> int:
 func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
 	record_block_override(chunk, local_position)
 	var light_changed_chunks := update_block_light_after_change(chunk.local_to_world(local_position))
-	var collision_sections := get_affected_collision_sections(local_position.y)
+	var sun_changed_chunks := update_sunlight_after_change(chunk.local_to_world(local_position))
+	var collision_sections := get_affected_collision_regions(local_position)
 	request_chunk_rebuild(chunk.chunk_position, true, collision_sections)
 	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
-		request_chunk_rebuild(neighbor_position, true, collision_sections)
+		request_chunk_rebuild(neighbor_position, true, [])
 	for changed_position in light_changed_chunks:
+		if changed_position != chunk.chunk_position and not chunk.get_affected_neighbor_positions(local_position).has(changed_position):
+			request_chunk_rebuild(changed_position, true)
+	for changed_position in sun_changed_chunks:
 		if changed_position != chunk.chunk_position and not chunk.get_affected_neighbor_positions(local_position).has(changed_position):
 			request_chunk_rebuild(changed_position, true)
 
 
-func get_affected_collision_sections(local_y: int) -> Array[int]:
-	var section := clampi(
-		floori(float(local_y) / Chunk.COLLISION_SECTION_HEIGHT),
-		0,
-		Chunk.COLLISION_SECTION_COUNT - 1
+func get_affected_collision_regions(local_position: Vector3i) -> Array[int]:
+	var region := Vector3i(
+		clampi(local_position.x / Chunk.COLLISION_REGION_SIZE, 0, Chunk.COLLISION_REGION_COUNT_X - 1),
+		clampi(local_position.y / Chunk.COLLISION_REGION_SIZE, 0, Chunk.COLLISION_REGION_COUNT_Y - 1),
+		clampi(local_position.z / Chunk.COLLISION_REGION_SIZE, 0, Chunk.COLLISION_REGION_COUNT_Z - 1)
 	)
-	var sections: Array[int] = [section]
-	var section_local_y := local_y % Chunk.COLLISION_SECTION_HEIGHT
-	if section_local_y == 0 and section > 0:
-		sections.append(section - 1)
-	elif (
-		section_local_y == Chunk.COLLISION_SECTION_HEIGHT - 1
-		and section < Chunk.COLLISION_SECTION_COUNT - 1
-	):
-		sections.append(section + 1)
-	sections.sort()
-	return sections
+	return [ChunkMesher.get_collision_region_index(region)]
 
 
 func rebuild_chunk_at(chunk_position: Vector2i) -> void:
 	var all_sections: Array[int] = []
-	for section in Chunk.COLLISION_SECTION_COUNT:
+	for section in Chunk.COLLISION_REGION_COUNT:
 		all_sections.append(section)
 	request_chunk_rebuild(chunk_position, true, all_sections)
 

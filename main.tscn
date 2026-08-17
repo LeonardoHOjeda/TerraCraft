@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3 uid="uid://ctbetoyn2x2m6"]
+[gd_scene format=3 uid="uid://ctbetoyn2x2m6"]
 
 [ext_resource type="PackedScene" uid="uid://7o6oqd6peqhl" path="res://player/player.tscn" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://ceiwl42aeeftp" path="res://hotbar.gd" id="3_h2yge"]
@@ -23,17 +23,21 @@ background_mode = 2
 sky = SubResource("Sky_caves")
 ambient_light_source = 2
 ambient_light_color = Color(0.32, 0.39, 0.5, 1)
-ambient_light_energy = 0.035
 ambient_light_sky_contribution = 0.0
+ambient_light_energy = 0.035
 reflected_light_source = 2
 
 [node name="Main" type="Node3D" unique_id=828085398]
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=506382174]
 environment = SubResource("Environment_caves")
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
 player_path = NodePath("../Player")
+streaming_steps_per_frame = 4
+max_background_jobs = 1
+streaming_main_thread_budget_ms = 3.0
+log_streaming_main_thread_frames = true
 log_gameplay_collision_stats = true
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
