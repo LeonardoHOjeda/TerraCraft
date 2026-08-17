@@ -22,11 +22,11 @@ signal crafting_stations_changed
 
 var gravity: float = 20.0
 var is_flying: bool = false
-var inventory_open: bool = false
 var mining_controller: MiningController
 var block_placement_controller: BlockPlacementController
 var station_detector: StationDetector
 var hotbar_controller: HotbarController
+var interaction_state: PlayerInteractionState
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -34,6 +34,9 @@ func _ready() -> void:
 	setup_components()
 
 func setup_components() -> void:
+	interaction_state = PlayerInteractionState.new()
+	interaction_state.name = "InteractionState"
+	add_child(interaction_state)
 	hotbar_controller = HotbarController.new()
 	hotbar_controller.name = "HotbarController"
 	add_child(hotbar_controller)
@@ -41,11 +44,11 @@ func setup_components() -> void:
 	mining_controller = MiningController.new()
 	mining_controller.name = "MiningController"
 	add_child(mining_controller)
-	mining_controller.setup(self, camera, world, hotbar_controller, mining_cracks, interaction_distance, cracks_texture)
+	mining_controller.setup(self, camera, world, hotbar_controller, interaction_state, mining_cracks, interaction_distance, cracks_texture)
 	block_placement_controller = BlockPlacementController.new()
 	block_placement_controller.name = "BlockPlacementController"
 	add_child(block_placement_controller)
-	block_placement_controller.setup(self, camera, world, hotbar_controller, interaction_distance, place_cooldown)
+	block_placement_controller.setup(self, camera, world, hotbar_controller, interaction_state, interaction_distance, place_cooldown)
 	station_detector = StationDetector.new()
 	station_detector.name = "StationDetector"
 	add_child(station_detector)
@@ -60,12 +63,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		camera.rotation.x = clamp(camera.rotation.x, deg_to_rad(-89.0), deg_to_rad(89.0))
-	if event.is_action_pressed("ui_cancel") and not inventory_open:
+	if event.is_action_pressed("ui_cancel") and not interaction_state.is_inventory_open():
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _physics_process(delta: float) -> void:
-	mining_controller.process(delta, not inventory_open)
-	block_placement_controller.process(delta, not inventory_open)
+	mining_controller.process(delta)
+	block_placement_controller.process(delta)
 	station_detector.process(delta)
 	if is_flying:
 		var input_direction := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")

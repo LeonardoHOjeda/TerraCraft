@@ -6,6 +6,9 @@ const ICON_SIZE := 32
 @export var atlas: Texture2D
 @export var player: Player
 
+var inventory: Inventory
+var interaction_state: PlayerInteractionState
+
 @onready var inventory_grid: GridContainer = $HBoxContainer/InventorySection/InventoryGrid
 @onready var hotbar_grid: GridContainer = $HBoxContainer/InventorySection/HotbarGrid
 @onready var crafting_grid: GridContainer = $HBoxContainer/CraftingSection/CraftingScroll/CraftingGrid
@@ -28,6 +31,10 @@ var crafting_buttons: Array[Button] = []
 func _ready() -> void:
 	visible = false
 
+	if player:
+		inventory = player.inventory
+		interaction_state = player.interaction_state
+
 	inventory_grid.add_theme_constant_override("h_separation", 4)
 	inventory_grid.add_theme_constant_override("v_separation", 4)
 
@@ -39,8 +46,8 @@ func _ready() -> void:
 	crafting_grid.add_theme_constant_override("v_separation", 4)
 
 	if player:
-		player.inventory.slot_changed.connect(update_slot)
-		player.inventory.slot_changed.connect(_on_inventory_changed)
+		inventory.slot_changed.connect(update_slot)
+		inventory.slot_changed.connect(_on_inventory_changed)
 		player.crafting_stations_changed.connect(update_crafting_buttons)
 
 	update_all_slots()
@@ -142,8 +149,8 @@ func update_slot(index: int) -> void:
 	if player == null:
 		return
 
-	var item_id := player.inventory.get_item(index)
-	var amount := player.inventory.get_amount(index)
+	var item_id := inventory.get_item(index)
+	var amount := inventory.get_amount(index)
 
 	if item_id == ItemRegistry.Item.NONE:
 		slot_icons[index].texture = null
@@ -178,8 +185,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func toggle_inventory() -> void:
 	visible = !visible
 
-	if player:
-		player.inventory_open = visible
+	if interaction_state:
+		interaction_state.set_inventory_open(visible)
 
 	if visible:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -205,8 +212,6 @@ func _on_slot_gui_input(index: int, event: InputEvent) -> void:
 		handle_right_click(index)
 
 func handle_left_click(index: int) -> void:
-	var inventory := player.inventory
-
 	var slot_item := inventory.get_item(index)
 	var slot_amount := inventory.get_amount(index)
 
@@ -261,8 +266,6 @@ func handle_left_click(index: int) -> void:
 	cursor_amount = slot_amount
 
 func handle_right_click(index: int) -> void:
-	var inventory := player.inventory
-
 	var slot_item := inventory.get_item(index)
 	var slot_amount := inventory.get_amount(index)
 
@@ -349,13 +352,13 @@ func update_slot_tooltip(index: int) -> void:
 	if player == null:
 		return
 
-	var item_id := player.inventory.get_item(index)
+	var item_id := inventory.get_item(index)
 
 	if item_id == ItemRegistry.Item.NONE:
 		slot_buttons[index].tooltip_text = ""
 		return
 
-	var amount := player.inventory.get_amount(index)
+	var amount := inventory.get_amount(index)
 	var item_name := ItemRegistry.get_item_name(item_id)
 
 	slot_buttons[index].tooltip_text = (
@@ -391,8 +394,6 @@ func handle_shift_click(index: int) -> void:
 	if cursor_item != ItemRegistry.Item.NONE:
 		return
 
-	var inventory := player.inventory
-
 	if inventory.get_item(index) == ItemRegistry.Item.NONE:
 		return
 
@@ -417,7 +418,6 @@ func handle_double_click(index: int) -> void:
 	if player == null:
 		return
 
-	var inventory := player.inventory
 	var target_item := cursor_item
 
 	if target_item == ItemRegistry.Item.NONE:
@@ -575,7 +575,7 @@ func update_crafting_tooltip(recipe_index: int) -> void:
 
 	for item_id in ingredients:
 		var required: int = ingredients[item_id]
-		var owned: int = player.inventory.get_total_amount(item_id)
+		var owned: int = inventory.get_total_amount(item_id)
 
 		text += (
 			"\n"

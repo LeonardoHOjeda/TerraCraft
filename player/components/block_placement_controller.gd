@@ -5,21 +5,23 @@ var player: Player
 var camera: Camera3D
 var world: World
 var hotbar_controller: HotbarController
+var interaction_state: PlayerInteractionState
 var interaction_distance: float
 var place_cooldown: float
 var place_timer := 0.0
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, distance: float, cooldown: float) -> void:
+func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, distance: float, cooldown: float) -> void:
 	player = new_player
 	camera = new_camera
 	world = new_world
 	hotbar_controller = new_hotbar_controller
+	interaction_state = new_interaction_state
 	interaction_distance = distance
 	place_cooldown = cooldown
 
-func process(delta: float, enabled: bool) -> void:
+func process(delta: float) -> void:
 	place_timer = max(place_timer - delta, 0.0)
-	if enabled and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and place_timer <= 0.0:
+	if interaction_state.can_interact_with_blocks() and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and place_timer <= 0.0:
 		place_block()
 		place_timer = place_cooldown
 

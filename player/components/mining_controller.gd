@@ -5,6 +5,7 @@ var player: Player
 var camera: Camera3D
 var world: World
 var hotbar_controller: HotbarController
+var interaction_state: PlayerInteractionState
 var mining_cracks: MeshInstance3D
 var interaction_distance: float
 var cracks_texture: Texture2D
@@ -12,19 +13,20 @@ var mining_progress := 0.0
 var mining_block_position: Vector3i
 var is_mining := false
 
-func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, cracks: MeshInstance3D, distance: float, texture: Texture2D) -> void:
+func setup(new_player: Player, new_camera: Camera3D, new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, cracks: MeshInstance3D, distance: float, texture: Texture2D) -> void:
 	player = new_player
 	camera = new_camera
 	world = new_world
 	hotbar_controller = new_hotbar_controller
+	interaction_state = new_interaction_state
 	mining_cracks = cracks
 	interaction_distance = distance
 	cracks_texture = texture
 	mining_cracks.visible = false
 	build_mining_cracks_mesh()
 
-func process(delta: float, enabled: bool) -> void:
-	if enabled and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+func process(delta: float) -> void:
+	if interaction_state.can_interact_with_blocks() and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		process_mining(delta)
 	else:
 		reset_mining()
