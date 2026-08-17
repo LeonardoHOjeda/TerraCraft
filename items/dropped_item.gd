@@ -103,66 +103,17 @@ func setup_texture() -> void:
 	var indices := PackedInt32Array()
 
 	var half := 0.15
+	var is_placeable := ItemRegistry.get_placeable_block(item_id) != BlockRegistry.Block.AIR
 
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(-half, -half, half),
-		Vector3(half, -half, half),
-		Vector3(half, half, half),
-		Vector3(-half, half, half),
-		Vector3(0, 0, 1),
-		u0, v0, u1, v1
-	)
-
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(half, -half, -half),
-		Vector3(-half, -half, -half),
-		Vector3(-half, half, -half),
-		Vector3(half, half, -half),
-		Vector3(0, 0, -1),
-		u0, v0, u1, v1
-	)
-
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(-half, -half, -half),
-		Vector3(-half, -half, half),
-		Vector3(-half, half, half),
-		Vector3(-half, half, -half),
-		Vector3(-1, 0, 0),
-		u0, v0, u1, v1
-	)
-
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(half, -half, half),
-		Vector3(half, -half, -half),
-		Vector3(half, half, -half),
-		Vector3(half, half, half),
-		Vector3(1, 0, 0),
-		u0, v0, u1, v1
-	)
-
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(-half, half, half),
-		Vector3(half, half, half),
-		Vector3(half, half, -half),
-		Vector3(-half, half, -half),
-		Vector3(0, 1, 0),
-		u0, v0, u1, v1
-	)
-
-	add_face(
-		vertices, normals, uvs, indices,
-		Vector3(-half, -half, -half),
-		Vector3(half, -half, -half),
-		Vector3(half, -half, half),
-		Vector3(-half, -half, half),
-		Vector3(0, -1, 0),
-		u0, v0, u1, v1
-	)
+	if is_placeable:
+		add_face(vertices, normals, uvs, indices, Vector3(-half, -half, half), Vector3(half, -half, half), Vector3(half, half, half), Vector3(-half, half, half), Vector3(0, 0, 1), u0, v0, u1, v1)
+		add_face(vertices, normals, uvs, indices, Vector3(half, -half, -half), Vector3(-half, -half, -half), Vector3(-half, half, -half), Vector3(half, half, -half), Vector3(0, 0, -1), u0, v0, u1, v1)
+		add_face(vertices, normals, uvs, indices, Vector3(-half, -half, -half), Vector3(-half, -half, half), Vector3(-half, half, half), Vector3(-half, half, -half), Vector3(-1, 0, 0), u0, v0, u1, v1)
+		add_face(vertices, normals, uvs, indices, Vector3(half, -half, half), Vector3(half, -half, -half), Vector3(half, half, -half), Vector3(half, half, half), Vector3(1, 0, 0), u0, v0, u1, v1)
+		add_face(vertices, normals, uvs, indices, Vector3(-half, half, half), Vector3(half, half, half), Vector3(half, half, -half), Vector3(-half, half, -half), Vector3(0, 1, 0), u0, v0, u1, v1)
+		add_face(vertices, normals, uvs, indices, Vector3(-half, -half, -half), Vector3(half, -half, -half), Vector3(half, -half, half), Vector3(-half, -half, half), Vector3(0, -1, 0), u0, v0, u1, v1)
+	else:
+		add_face(vertices, normals, uvs, indices, Vector3(-half, -half, 0), Vector3(half, -half, 0), Vector3(half, half, 0), Vector3(-half, half, 0), Vector3(0, 0, 1), u0, v0, u1, v1)
 
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -183,6 +134,8 @@ func setup_texture() -> void:
 	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	if not is_placeable:
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 
 	mesh.surface_set_material(0, material)
 
