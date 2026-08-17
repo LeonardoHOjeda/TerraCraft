@@ -278,11 +278,11 @@ static func get_mining_speed(item_id: int) -> float:
 		Item.IRON_PICKAXE:
 			return 6.0
 		Item.WOODEN_AXE:
-			return 2.5
+			return 0.8
 		Item.STONE_AXE:
-			return 4.0
+			return 1.4
 		Item.IRON_AXE:
-			return 6.0
+			return 2.0
 
 	return 1.0
 
