@@ -7,8 +7,9 @@ const HEIGHT := 64
 var blocks := []
 
 
-func _init() -> void:
-	reset()
+func _init(initialize_blocks: bool = true) -> void:
+	if initialize_blocks:
+		reset()
 
 
 func reset() -> void:
@@ -45,3 +46,9 @@ func set_block(position: Vector3i, block: int) -> bool:
 		return false
 	blocks[position.x][position.y][position.z] = block
 	return true
+
+
+func duplicate_data() -> ChunkData:
+	var copy := ChunkData.new(false)
+	copy.blocks = blocks.duplicate(true)
+	return copy

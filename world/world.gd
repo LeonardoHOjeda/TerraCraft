@@ -1,17 +1,22 @@
 class_name World
 extends Node3D
 
-@export var chunk_scene: PackedScene
+const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 
-@export var world_size_x: int = 8
-@export var world_size_z: int = 8
+@export var chunk_scene: PackedScene
+@export_node_path("Node3D") var player_path: NodePath
+@export_range(0, 32, 1) var load_distance: int = 3
+@export_range(1, 40, 1) var unload_distance: int = 4
+@export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
+@export_range(1, 8, 1) var max_background_jobs: int = 2
+@export var log_chunk_timings: bool = true
+@export_range(1, 100, 1) var timing_samples_to_log: int = 12
+@export var log_neighbor_rebuild_timings: bool = false
 
 @export var seed: int = 12345
 @export var terrain_frequency: float = 0.025
-
 @export var base_height: int = 20
 @export var terrain_height: int = 20
-
 @export var dropped_item_scene: PackedScene
 
 var continental_noise := FastNoiseLite.new()
@@ -19,7 +24,6 @@ var detail_noise := FastNoiseLite.new()
 var biome_noise := FastNoiseLite.new()
 var tree_noise := FastNoiseLite.new()
 var cave_noise := FastNoiseLite.new()
-
 var coal_noise := FastNoiseLite.new()
 var iron_noise := FastNoiseLite.new()
 var copper_noise := FastNoiseLite.new()
@@ -28,9 +32,412 @@ var gold_noise := FastNoiseLite.new()
 var tungsten_noise := FastNoiseLite.new()
 var platinum_noise := FastNoiseLite.new()
 
+enum ChunkStage {
+	GENERATE_DATA,
+	GENERATING,
+	BUILD_MESH_DATA,
+	MESHING,
+	APPLY_MESH,
+	BUILD_COLLISION,
+	READY,
+}
+
+var loaded_chunks: Dictionary = {}
+var chunk_stages: Dictionary = {}
+var work_queue: Array[Vector2i] = []
+var queued_work: Dictionary = {}
+var initial_chunks: Dictionary = {}
+var chunk_timings: Dictionary = {}
+var chunk_versions: Dictionary = {}
+var version_counters: Dictionary = {}
+var pending_mesh_data: Dictionary = {}
+var active_jobs: Array[Dictionary] = []
+var timing_samples_logged: int = 0
+var current_player_chunk := INVALID_CHUNK_POSITION
+var player: Node3D
+
+
 func _ready() -> void:
 	setup_noise()
-	generate_world()
+	resolve_player()
+	if player != null:
+		current_player_chunk = get_chunk_position(player.global_position)
+		update_streaming_targets()
+
+
+func _exit_tree() -> void:
+	for job in active_jobs:
+		var thread: Thread = job["thread"]
+		if thread.is_started():
+			thread.wait_to_finish()
+	active_jobs.clear()
+
+
+func _process(_delta: float) -> void:
+	if player == null:
+		resolve_player()
+		if player == null:
+			return
+		current_player_chunk = get_chunk_position(player.global_position)
+		update_streaming_targets()
+
+	var new_player_chunk := get_chunk_position(player.global_position)
+	if new_player_chunk != current_player_chunk:
+		current_player_chunk = new_player_chunk
+		update_streaming_targets()
+
+	collect_finished_jobs()
+	start_background_jobs()
+	process_main_thread_queue()
+
+
+func resolve_player() -> void:
+	if player_path.is_empty():
+		return
+	player = get_node_or_null(player_path) as Node3D
+
+
+func get_chunk_position(world_position: Vector3) -> Vector2i:
+	return Vector2i(
+		floori(world_position.x / float(Chunk.SIZE_XZ)),
+		floori(world_position.z / float(Chunk.SIZE_XZ))
+	)
+
+
+func update_streaming_targets() -> void:
+	unload_distance = maxi(unload_distance, load_distance + 1)
+
+	for offset_x in range(-load_distance, load_distance + 1):
+		for offset_z in range(-load_distance, load_distance + 1):
+			var chunk_position := current_player_chunk + Vector2i(offset_x, offset_z)
+			if chunk_stages.has(chunk_position):
+				continue
+			chunk_stages[chunk_position] = ChunkStage.GENERATE_DATA
+			var next_version := int(version_counters.get(chunk_position, 0)) + 1
+			version_counters[chunk_position] = next_version
+			chunk_versions[chunk_position] = next_version
+			initial_chunks[chunk_position] = true
+			chunk_timings[chunk_position] = {
+				"generation_worker_usec": 0,
+				"generation_dispatch_usec": 0,
+				"mesh_worker_usec": 0,
+				"snapshot_usec": 0,
+				"apply_mesh_usec": 0,
+				"collision_usec": 0,
+			}
+			enqueue_work(chunk_position)
+
+	var chunks_to_unload: Array[Vector2i] = []
+	for chunk_position in chunk_stages:
+		if chebyshev_distance(chunk_position, current_player_chunk) > unload_distance:
+			chunks_to_unload.append(chunk_position)
+
+	for chunk_position in chunks_to_unload:
+		unload_chunk(chunk_position)
+
+
+func enqueue_work(chunk_position: Vector2i) -> void:
+	if queued_work.has(chunk_position):
+		return
+	work_queue.append(chunk_position)
+	queued_work[chunk_position] = true
+
+
+func start_background_jobs() -> void:
+	var started := 0
+	while active_jobs.size() < max_background_jobs and started < streaming_steps_per_frame:
+		var chunk_position := pop_work_for_stages([ChunkStage.GENERATE_DATA, ChunkStage.BUILD_MESH_DATA])
+		if chunk_position == INVALID_CHUNK_POSITION:
+			return
+		var stage: int = chunk_stages[chunk_position]
+		var version: int = chunk_versions[chunk_position]
+		var worker: RefCounted
+		var callable: Callable
+		if stage == ChunkStage.GENERATE_DATA:
+			var dispatch_started_at := Time.get_ticks_usec()
+			var parameters := create_generation_parameters(chunk_position)
+			chunk_timings[chunk_position]["generation_dispatch_usec"] = Time.get_ticks_usec() - dispatch_started_at
+			worker = ChunkGenerator.new()
+			callable = Callable(worker, "generate_data").bind(parameters)
+			chunk_stages[chunk_position] = ChunkStage.GENERATING
+		else:
+			var snapshot_started_at := Time.get_ticks_usec()
+			var snapshot := create_meshing_snapshot(chunk_position)
+			chunk_timings[chunk_position]["snapshot_usec"] = Time.get_ticks_usec() - snapshot_started_at
+			worker = ChunkMesher.new()
+			callable = Callable(worker, "build_mesh_data").bind(snapshot)
+			chunk_stages[chunk_position] = ChunkStage.MESHING
+
+		var thread := Thread.new()
+		var error := thread.start(callable, Thread.PRIORITY_NORMAL)
+		if error != OK:
+			chunk_stages[chunk_position] = stage
+			enqueue_work(chunk_position)
+			return
+		active_jobs.append({
+			"thread": thread,
+			"chunk_position": chunk_position,
+			"version": version,
+			"stage": stage,
+			"worker": worker,
+		})
+		started += 1
+
+
+func collect_finished_jobs() -> void:
+	for index in range(active_jobs.size() - 1, -1, -1):
+		var job: Dictionary = active_jobs[index]
+		var thread: Thread = job["thread"]
+		if thread.is_alive():
+			continue
+		var result: Dictionary = thread.wait_to_finish()
+		active_jobs.remove_at(index)
+		var chunk_position: Vector2i = job["chunk_position"]
+		var version: int = job["version"]
+		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
+			continue
+		if job["stage"] == ChunkStage.GENERATE_DATA:
+			apply_generated_data(chunk_position, result)
+		else:
+			chunk_timings[chunk_position]["mesh_worker_usec"] = result["worker_usec"]
+			pending_mesh_data[chunk_position] = result
+			chunk_stages[chunk_position] = ChunkStage.APPLY_MESH
+			enqueue_work(chunk_position)
+
+
+func process_main_thread_queue() -> void:
+	var steps := 0
+	while steps < streaming_steps_per_frame:
+		var chunk_position := pop_work_for_stages([ChunkStage.APPLY_MESH, ChunkStage.BUILD_COLLISION])
+		if chunk_position == INVALID_CHUNK_POSITION:
+			return
+		if chunk_stages[chunk_position] == ChunkStage.APPLY_MESH:
+			apply_chunk_mesh(chunk_position)
+		else:
+			build_chunk_collision(chunk_position)
+		steps += 1
+
+
+func pop_work_for_stages(stages: Array) -> Vector2i:
+	sort_work_queue()
+	for index in work_queue.size():
+		var chunk_position := work_queue[index]
+		if not chunk_stages.has(chunk_position):
+			queued_work.erase(chunk_position)
+			work_queue.remove_at(index)
+			return pop_work_for_stages(stages)
+		if stages.has(chunk_stages[chunk_position]):
+			work_queue.remove_at(index)
+			queued_work.erase(chunk_position)
+			return chunk_position
+	return INVALID_CHUNK_POSITION
+
+
+func sort_work_queue() -> void:
+	work_queue.sort_custom(
+		func(a: Vector2i, b: Vector2i) -> bool:
+			var a_distance := distance_squared(a, current_player_chunk)
+			var b_distance := distance_squared(b, current_player_chunk)
+			if a_distance == b_distance:
+				if a.x == b.x:
+					return a.y < b.y
+				return a.x < b.x
+			return a_distance < b_distance
+	)
+
+
+func distance_squared(a: Vector2i, b: Vector2i) -> int:
+	var difference := a - b
+	return difference.x * difference.x + difference.y * difference.y
+
+
+func chebyshev_distance(a: Vector2i, b: Vector2i) -> int:
+	var difference := a - b
+	return maxi(absi(difference.x), absi(difference.y))
+
+
+func create_generation_parameters(chunk_position: Vector2i) -> Dictionary:
+	return {
+		"chunk_position": chunk_position,
+		"continental_noise": continental_noise.duplicate() as FastNoiseLite,
+		"detail_noise": detail_noise.duplicate() as FastNoiseLite,
+		"biome_noise": biome_noise.duplicate() as FastNoiseLite,
+		"tree_noise": tree_noise.duplicate() as FastNoiseLite,
+		"cave_noise": cave_noise.duplicate() as FastNoiseLite,
+		"coal_noise": coal_noise.duplicate() as FastNoiseLite,
+		"iron_noise": iron_noise.duplicate() as FastNoiseLite,
+		"copper_noise": copper_noise.duplicate() as FastNoiseLite,
+		"tin_noise": tin_noise.duplicate() as FastNoiseLite,
+		"gold_noise": gold_noise.duplicate() as FastNoiseLite,
+		"tungsten_noise": tungsten_noise.duplicate() as FastNoiseLite,
+		"platinum_noise": platinum_noise.duplicate() as FastNoiseLite,
+		"terrain_height": terrain_height,
+		"base_height": base_height,
+	}
+
+
+func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
+	if chunk_scene == null:
+		return
+	var chunk := chunk_scene.instantiate() as Chunk
+	if chunk == null:
+		chunk_stages.erase(chunk_position)
+		initial_chunks.erase(chunk_position)
+		chunk_timings.erase(chunk_position)
+		chunk_versions.erase(chunk_position)
+		return
+	chunk.position = Vector3(chunk_position.x * Chunk.SIZE_XZ, 0, chunk_position.y * Chunk.SIZE_XZ)
+	chunk.name = "Chunk_%d_%d" % [chunk_position.x, chunk_position.y]
+	add_child(chunk)
+	loaded_chunks[chunk_position] = chunk
+	chunk.initialize_from_data(self, chunk_position, result["data"])
+	# Future persistence hook: apply saved block overrides here, after procedural generation.
+	chunk_timings[chunk_position]["generation_worker_usec"] = result["worker_usec"]
+	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
+	enqueue_work(chunk_position)
+
+
+func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	var negative_x := create_empty_boundary()
+	var positive_x := create_empty_boundary()
+	var negative_z := create_empty_boundary()
+	var positive_z := create_empty_boundary()
+	copy_neighbor_x_boundary(negative_x, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_x_boundary(positive_x, chunk_position + Vector2i.RIGHT, 0)
+	copy_neighbor_z_boundary(negative_z, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_z_boundary(positive_z, chunk_position + Vector2i.DOWN, 0)
+	return {
+		"data": chunk.data.duplicate_data(),
+		"negative_x": negative_x,
+		"positive_x": positive_x,
+		"negative_z": negative_z,
+		"positive_z": positive_z,
+	}
+
+
+func create_empty_boundary() -> PackedInt32Array:
+	var boundary := PackedInt32Array()
+	boundary.resize(ChunkData.HEIGHT * ChunkData.SIZE_XZ)
+	boundary.fill(BlockRegistry.Block.AIR)
+	return boundary
+
+
+func copy_neighbor_x_boundary(target: PackedInt32Array, neighbor_position: Vector2i, source_x: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for z in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_block(Vector3i(source_x, y, z))
+
+
+func copy_neighbor_z_boundary(target: PackedInt32Array, neighbor_position: Vector2i, source_z: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for x in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block(Vector3i(x, y, source_z))
+
+
+func apply_chunk_mesh(chunk_position: Vector2i) -> void:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk == null or not pending_mesh_data.has(chunk_position):
+		return
+	var started_at := Time.get_ticks_usec()
+	chunk.apply_mesh_data(pending_mesh_data[chunk_position])
+	pending_mesh_data.erase(chunk_position)
+	chunk_timings[chunk_position]["apply_mesh_usec"] = Time.get_ticks_usec() - started_at
+	chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+	enqueue_work(chunk_position)
+
+
+func build_chunk_collision(chunk_position: Vector2i) -> void:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk == null:
+		return
+	var started_at := Time.get_ticks_usec()
+	chunk.build_collision_only()
+	chunk_timings[chunk_position]["collision_usec"] = Time.get_ticks_usec() - started_at
+	chunk_stages[chunk_position] = ChunkStage.READY
+
+	if initial_chunks.has(chunk_position):
+		initial_chunks.erase(chunk_position)
+		if log_chunk_timings and timing_samples_logged < timing_samples_to_log:
+			print_chunk_timing(chunk_position, false)
+			timing_samples_logged += 1
+		request_cardinal_neighbor_rebuilds(chunk_position)
+	elif log_neighbor_rebuild_timings:
+		print_chunk_timing(chunk_position, true)
+
+
+func print_chunk_timing(chunk_position: Vector2i, is_rebuild: bool) -> void:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	if is_rebuild:
+		print(
+			"Chunk rebuild (%d,%d): snapshot main %.2f ms | mesh-data worker %.2f ms | apply mesh main %.2f ms | collision main %.2f ms"
+			% [
+				chunk_position.x,
+				chunk_position.y,
+				float(timing.get("snapshot_usec", 0)) / 1000.0,
+				float(timing.get("mesh_worker_usec", 0)) / 1000.0,
+				float(timing.get("apply_mesh_usec", 0)) / 1000.0,
+				float(timing.get("collision_usec", 0)) / 1000.0,
+			]
+		)
+		return
+	print(
+		"Chunk (%d,%d): generation dispatch main %.2f ms | generation worker %.2f ms | snapshot main %.2f ms | mesh-data worker %.2f ms | apply mesh main %.2f ms | collision main %.2f ms"
+		% [
+			chunk_position.x,
+			chunk_position.y,
+			float(timing.get("generation_dispatch_usec", 0)) / 1000.0,
+			float(timing.get("generation_worker_usec", 0)) / 1000.0,
+			float(timing.get("snapshot_usec", 0)) / 1000.0,
+			float(timing.get("mesh_worker_usec", 0)) / 1000.0,
+			float(timing.get("apply_mesh_usec", 0)) / 1000.0,
+			float(timing.get("collision_usec", 0)) / 1000.0,
+		]
+	)
+
+
+func unload_chunk(chunk_position: Vector2i) -> void:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk != null:
+		# Future persistence hook: save modified block overrides before removing this chunk.
+		chunk.queue_free()
+	loaded_chunks.erase(chunk_position)
+	chunk_stages.erase(chunk_position)
+	initial_chunks.erase(chunk_position)
+	chunk_timings.erase(chunk_position)
+	chunk_versions.erase(chunk_position)
+	pending_mesh_data.erase(chunk_position)
+	queued_work.erase(chunk_position)
+	request_cardinal_neighbor_rebuilds(chunk_position)
+
+
+func request_cardinal_neighbor_rebuilds(chunk_position: Vector2i) -> void:
+	for offset in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+		request_chunk_rebuild(chunk_position + offset)
+
+
+func request_chunk_rebuild(chunk_position: Vector2i) -> void:
+	if not loaded_chunks.has(chunk_position):
+		return
+	var stage: int = chunk_stages.get(chunk_position, ChunkStage.READY)
+	if stage == ChunkStage.GENERATE_DATA or stage == ChunkStage.GENERATING:
+		return
+	var next_version := int(version_counters.get(chunk_position, 0)) + 1
+	version_counters[chunk_position] = next_version
+	chunk_versions[chunk_position] = next_version
+	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
+	pending_mesh_data.erase(chunk_position)
+	chunk_timings[chunk_position]["snapshot_usec"] = 0
+	chunk_timings[chunk_position]["mesh_worker_usec"] = 0
+	chunk_timings[chunk_position]["apply_mesh_usec"] = 0
+	chunk_timings[chunk_position]["collision_usec"] = 0
+	enqueue_work(chunk_position)
 
 
 func setup_noise() -> void:
@@ -76,199 +483,111 @@ func setup_noise() -> void:
 	setup_ore_noise(platinum_noise, seed + 16, 0.055)
 
 
-func generate_world() -> void:
-	var half_x := world_size_x / 2
-	var half_z := world_size_z / 2
-
-	for chunk_x in range(-half_x, half_x):
-		for chunk_z in range(-half_z, half_z):
-			create_chunk(chunk_x, chunk_z)
-
-	generate_world_trees()
-	rebuild_all_chunks()
-
-
-func create_chunk(chunk_x: int, chunk_z: int) -> void:
-	if chunk_scene == null:
-		return
-
-	var chunk := chunk_scene.instantiate() as Chunk
-
-	chunk.position = Vector3(chunk_x * Chunk.SIZE_XZ, 0, chunk_z * Chunk.SIZE_XZ)
-
-	chunk.name = "Chunk_%d_%d" % [chunk_x, chunk_z]
-
-	add_child(chunk)
-
-	chunk.initialize(
-		self,
-		Vector2i(chunk_x, chunk_z),
-		continental_noise,
-		detail_noise,
-		biome_noise,
-		cave_noise,
-		coal_noise,
-		iron_noise,
-		copper_noise,
-		tin_noise,
-		gold_noise,
-		tungsten_noise,
-		platinum_noise,
-		terrain_height,
-		base_height
-	)
-
 func get_chunk_at_world_position(world_position: Vector3i) -> Chunk:
-	var chunk_x := floori(float(world_position.x) / Chunk.SIZE_XZ)
-	var chunk_z := floori(float(world_position.z) / Chunk.SIZE_XZ)
+	var chunk_position := Vector2i(
+		floori(float(world_position.x) / Chunk.SIZE_XZ),
+		floori(float(world_position.z) / Chunk.SIZE_XZ)
+	)
+	return loaded_chunks.get(chunk_position) as Chunk
 
-	var chunk_name := "Chunk_%d_%d" % [chunk_x, chunk_z]
-	return get_node_or_null(chunk_name) as Chunk
 
 func get_block_at_world_position(position: Vector3i) -> int:
 	var chunk := get_chunk_at_world_position(position)
-
 	if chunk == null:
 		return BlockRegistry.Block.AIR
+	return chunk.get_block_local(chunk.world_to_local(position))
 
-	var local_position := chunk.world_to_local(position)
-
-	return chunk.get_block_local(local_position)
 
 func set_block_at_world_position(position: Vector3i, block: int, affected_chunks: Dictionary) -> void:
 	var chunk := get_chunk_at_world_position(position)
-
 	if chunk == null:
 		return
-
 	var local_position := chunk.world_to_local(position)
-
 	if chunk.set_block_local_if_empty(local_position, block):
 		affected_chunks[chunk] = true
 
+
 func get_surface_y(world_x: int, world_z: int) -> int:
-	for y in range(Chunk.HEIGHT - 1, 0, -1):
-		var block := get_block_at_world_position(Vector3i(world_x, y, world_z))
+	var chunk := get_chunk_at_world_position(Vector3i(world_x, 0, world_z))
+	if chunk == null:
+		return -1
+	var local_position := chunk.world_to_local(Vector3i(world_x, 0, world_z))
+	return chunk.get_surface_height(local_position.x, local_position.z)
 
-		if (block == BlockRegistry.Block.GRASS or block == BlockRegistry.Block.SAND):
-			return y
 
-	return -1
+func get_procedural_surface_y(world_x: int, world_z: int) -> int:
+	var continental := continental_noise.get_noise_2d(world_x, world_z)
+	var detail := detail_noise.get_noise_2d(world_x, world_z)
+	return clampi(base_height + roundi(continental * terrain_height + detail * 4.0), 1, Chunk.HEIGHT - 1)
 
-func generate_world_trees() -> void:
-	var affected_chunks: Dictionary = {}
 
-	var half_x := world_size_x / 2
-	var half_z := world_size_z / 2
+func apply_trees_to_chunk(chunk: Chunk) -> void:
+	const TREE_RADIUS := 2
+	var min_world_x := chunk.chunk_position.x * Chunk.SIZE_XZ
+	var min_world_z := chunk.chunk_position.y * Chunk.SIZE_XZ
+	var max_world_x := min_world_x + Chunk.SIZE_XZ - 1
+	var max_world_z := min_world_z + Chunk.SIZE_XZ - 1
 
-	var min_world_x := -half_x * Chunk.SIZE_XZ
-	var max_world_x := half_x * Chunk.SIZE_XZ
-
-	var min_world_z := -half_z * Chunk.SIZE_XZ
-	var max_world_z := half_z * Chunk.SIZE_XZ
-
-	for world_x in range(min_world_x + 2, max_world_x - 2):
-		for world_z in range(min_world_z + 2, max_world_z - 2):
+	for world_x in range(min_world_x - TREE_RADIUS, max_world_x + TREE_RADIUS + 1):
+		for world_z in range(min_world_z - TREE_RADIUS, max_world_z + TREE_RADIUS + 1):
 			if not should_generate_tree(world_x, world_z):
 				continue
+			var surface_y := get_procedural_surface_y(world_x, world_z)
+			create_tree_part_in_chunk(Vector3i(world_x, surface_y + 1, world_z), chunk)
 
-			var surface_y := get_surface_y(world_x, world_z)
-
-			if surface_y < 0:
-				continue
-
-			create_world_tree(
-				Vector3i(
-					world_x,
-					surface_y + 1,
-					world_z
-				),
-				affected_chunks
-			)
 
 func should_generate_tree(world_x: int, world_z: int) -> bool:
-	var biome_value := biome_noise.get_noise_2d(
-		world_x,
-		world_z
-	)
-
+	var biome_value := biome_noise.get_noise_2d(world_x, world_z)
 	if biome_value < -0.25:
 		return false
 
-	var value := tree_noise.get_noise_2d(
-		world_x,
-		world_z
-	)
-
+	var value := tree_noise.get_noise_2d(world_x, world_z)
 	var threshold := 0.72
-
 	if biome_value > 0.35:
 		threshold = 0.45
-
 	if value < threshold:
 		return false
 
 	var minimum_distance := 4
-
 	for offset_x in range(-minimum_distance, minimum_distance + 1):
 		for offset_z in range(-minimum_distance, minimum_distance + 1):
 			if offset_x == 0 and offset_z == 0:
 				continue
-
 			if offset_x * offset_x + offset_z * offset_z > minimum_distance * minimum_distance:
 				continue
-
-			var neighbor_value := tree_noise.get_noise_2d(
-				world_x + offset_x,
-				world_z + offset_z
-			)
-
+			var neighbor_value := tree_noise.get_noise_2d(world_x + offset_x, world_z + offset_z)
 			if neighbor_value > value:
 				return false
-
 	return true
 
-func create_world_tree(
-	position: Vector3i,
-	affected_chunks: Dictionary
-) -> void:
-	const TRUNK_HEIGHT := 4
 
+func create_tree_part_in_chunk(position: Vector3i, chunk: Chunk) -> void:
+	const TRUNK_HEIGHT := 4
 	for y in TRUNK_HEIGHT:
-		set_block_at_world_position(
-			position + Vector3i(0, y, 0),
-			BlockRegistry.Block.WOOD,
-			affected_chunks
-		)
+		set_procedural_tree_block(position + Vector3i(0, y, 0), BlockRegistry.Block.WOOD, chunk)
 
 	var leaves_center := position + Vector3i(0, TRUNK_HEIGHT, 0)
-
 	for offset_x in range(-2, 3):
 		for offset_y in range(-2, 2):
 			for offset_z in range(-2, 3):
 				if abs(offset_x) + abs(offset_z) > 3:
 					continue
-
-				set_block_at_world_position(
-					leaves_center + Vector3i(
-						offset_x,
-						offset_y,
-						offset_z
-					),
+				set_procedural_tree_block(
+					leaves_center + Vector3i(offset_x, offset_y, offset_z),
 					BlockRegistry.Block.LEAVES,
-					affected_chunks
+					chunk
 				)
+	set_procedural_tree_block(leaves_center + Vector3i(0, 2, 0), BlockRegistry.Block.LEAVES, chunk)
 
-	set_block_at_world_position(
-		leaves_center + Vector3i(0, 2, 0),
-		BlockRegistry.Block.LEAVES,
-		affected_chunks
+
+func set_procedural_tree_block(world_position: Vector3i, block: int, chunk: Chunk) -> void:
+	var target_position := Vector2i(
+		floori(float(world_position.x) / Chunk.SIZE_XZ),
+		floori(float(world_position.z) / Chunk.SIZE_XZ)
 	)
-
-func rebuild_all_chunks() -> void:
-	for child in get_children():
-		if child is Chunk:
-			child.rebuild_representation()
+	if target_position != chunk.chunk_position:
+		return
+	chunk.set_block_local_if_empty(chunk.world_to_local(world_position), block)
 
 
 func setup_ore_noise(noise: FastNoiseLite, noise_seed: int, frequency: float) -> void:
@@ -279,35 +598,38 @@ func setup_ore_noise(noise: FastNoiseLite, noise_seed: int, frequency: float) ->
 	noise.fractal_octaves = 2
 	noise.fractal_gain = 0.5
 
+
 func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
-	if dropped_item_scene == null:
+	if dropped_item_scene == null or item_id == ItemRegistry.Item.NONE:
 		return
-
-	if item_id == ItemRegistry.Item.NONE:
-		return
-
 	var dropped_item := dropped_item_scene.instantiate() as DroppedItem
-
 	if dropped_item == null:
 		return
-
 	dropped_item.item_id = item_id
 	dropped_item.amount = amount
-
 	add_child(dropped_item)
-
 	dropped_item.global_position = position
 
-func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
-	chunk.rebuild_representation()
 
+func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
+	prepare_for_synchronous_rebuild(chunk.chunk_position)
+	chunk.rebuild_representation()
 	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
 		rebuild_chunk_at(neighbor_position)
 
+
 func rebuild_chunk_at(chunk_position: Vector2i) -> void:
-	var chunk_name := "Chunk_%d_%d" % [chunk_position.x, chunk_position.y]
-
-	var chunk := get_node_or_null(chunk_name) as Chunk
-
-	if chunk:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk != null:
+		prepare_for_synchronous_rebuild(chunk_position)
 		chunk.rebuild_representation()
+
+
+func prepare_for_synchronous_rebuild(chunk_position: Vector2i) -> void:
+	var next_version := int(version_counters.get(chunk_position, 0)) + 1
+	version_counters[chunk_position] = next_version
+	chunk_versions[chunk_position] = next_version
+	chunk_stages[chunk_position] = ChunkStage.READY
+	pending_mesh_data.erase(chunk_position)
+	queued_work.erase(chunk_position)
+	work_queue.erase(chunk_position)

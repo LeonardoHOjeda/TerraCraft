@@ -7,13 +7,12 @@
 [ext_resource type="Script" uid="uid://bkhfw1rvpglw0" path="res://debug_panel.gd" id="6_7mycd"]
 [ext_resource type="Script" uid="uid://cuhw0djt0inwo" path="res://inventory_ui.gd" id="7_272bh"]
 [ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="8_5vw27"]
-[ext_resource type="Script" path="res://crafting/crafting_panel.gd" id="9_crafting"]
+[ext_resource type="Script" uid="uid://ubv3hceagv53" path="res://crafting/crafting_panel.gd" id="9_crafting"]
 
 [node name="Main" type="Node3D" unique_id=828085398]
 
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
-world_size_x = 10
-world_size_z = 10
+player_path = NodePath("../Player")
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)
@@ -108,10 +107,9 @@ horizontal_scroll_mode = 0
 [node name="CraftingGrid" type="GridContainer" parent="UI/InventoryPanel/HBoxContainer/CraftingSection/CraftingScroll" unique_id=1132393090]
 layout_mode = 2
 size_flags_horizontal = 3
-columns = 1
 script = ExtResource("9_crafting")
 
-[node name="CraftingEmptyLabel" type="Label" parent="UI/InventoryPanel/HBoxContainer/CraftingSection"]
+[node name="CraftingEmptyLabel" type="Label" parent="UI/InventoryPanel/HBoxContainer/CraftingSection" unique_id=773296714]
 custom_minimum_size = Vector2(190, 90)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.58, 0.62, 0.7, 1)
@@ -123,7 +121,7 @@ autowrap_mode = 2
 [node name="InventorySection" type="VBoxContainer" parent="UI/InventoryPanel/HBoxContainer" unique_id=1590614973]
 layout_mode = 2
 
-[node name="InventoryTitle" type="Label" parent="UI/InventoryPanel/HBoxContainer/InventorySection"]
+[node name="InventoryTitle" type="Label" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=375266142]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.78, 0.85, 0.98, 1)
 theme_override_font_sizes/font_size = 18
@@ -137,7 +135,7 @@ columns = 9
 [node name="HSeparator" type="HSeparator" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=1230215011]
 layout_mode = 2
 
-[node name="HotbarTitle" type="Label" parent="UI/InventoryPanel/HBoxContainer/InventorySection"]
+[node name="HotbarTitle" type="Label" parent="UI/InventoryPanel/HBoxContainer/InventorySection" unique_id=512497088]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.58, 0.65, 0.76, 1)
 text = "Acceso rápido"

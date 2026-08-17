@@ -19,11 +19,39 @@ var indices := PackedInt32Array()
 
 
 func build(data: ChunkData, neighbor_block_provider: Callable) -> ArrayMesh:
+	reset_buffers()
+	build_geometry(data, neighbor_block_provider)
+	return create_mesh(get_mesh_data())
+
+
+func build_mesh_data(snapshot: Dictionary) -> Dictionary:
+	var started_at := Time.get_ticks_usec()
+	reset_buffers()
+	var data: ChunkData = snapshot["data"]
+	for x in ChunkData.SIZE_XZ:
+		for y in ChunkData.HEIGHT:
+			for z in ChunkData.SIZE_XZ:
+				var block: int = data.get_block(Vector3i(x, y, z))
+				if block == BlockRegistry.Block.AIR:
+					continue
+				var block_position := Vector3i(x, y, z)
+				for direction in DIRECTIONS:
+					var neighbor_position = block_position + direction
+					if get_snapshot_block(snapshot, neighbor_position) == BlockRegistry.Block.AIR:
+						add_face(block_position, direction, block)
+	var mesh_data := get_mesh_data()
+	mesh_data["worker_usec"] = Time.get_ticks_usec() - started_at
+	return mesh_data
+
+
+func reset_buffers() -> void:
 	vertices.clear()
 	normals.clear()
 	uvs.clear()
 	indices.clear()
 
+
+func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
 	for x in ChunkData.SIZE_XZ:
 		for y in ChunkData.HEIGHT:
 			for z in ChunkData.SIZE_XZ:
@@ -44,23 +72,47 @@ func build(data: ChunkData, neighbor_block_provider: Callable) -> ArrayMesh:
 							block
 						)
 
+
+func get_mesh_data() -> Dictionary:
+	return {
+		"vertices": vertices,
+		"normals": normals,
+		"uvs": uvs,
+		"indices": indices,
+	}
+
+
+func create_mesh(mesh_data: Dictionary) -> ArrayMesh:
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
-
-	arrays[Mesh.ARRAY_VERTEX] = vertices
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = indices
+	arrays[Mesh.ARRAY_VERTEX] = mesh_data["vertices"]
+	arrays[Mesh.ARRAY_NORMAL] = mesh_data["normals"]
+	arrays[Mesh.ARRAY_TEX_UV] = mesh_data["uvs"]
+	arrays[Mesh.ARRAY_INDEX] = mesh_data["indices"]
 
 	var generated_mesh := ArrayMesh.new()
-
-	if vertices.size() > 0:
+	if (mesh_data["vertices"] as PackedVector3Array).size() > 0:
 		generated_mesh.add_surface_from_arrays(
 			Mesh.PRIMITIVE_TRIANGLES,
 			arrays
 		)
 
 	return generated_mesh
+
+
+func get_snapshot_block(snapshot: Dictionary, position: Vector3i) -> int:
+	if position.y < 0 or position.y >= ChunkData.HEIGHT:
+		return BlockRegistry.Block.AIR
+	if position.x >= 0 and position.x < ChunkData.SIZE_XZ and position.z >= 0 and position.z < ChunkData.SIZE_XZ:
+		var data: ChunkData = snapshot["data"]
+		return data.get_block(position)
+	if position.x < 0:
+		return snapshot["negative_x"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.x >= ChunkData.SIZE_XZ:
+		return snapshot["positive_x"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.z < 0:
+		return snapshot["negative_z"][position.y * ChunkData.SIZE_XZ + position.x]
+	return snapshot["positive_z"][position.y * ChunkData.SIZE_XZ + position.x]
 
 
 func add_face(block_position: Vector3i, direction: Vector3i, block: int) -> void:

@@ -104,12 +104,30 @@ func initialize(
 	)
 
 
+func initialize_from_data(new_world: World, new_chunk_position: Vector2i, new_data: ChunkData) -> void:
+	world = new_world
+	chunk_position = new_chunk_position
+	data = new_data
+
+
 func get_block(position: Vector3i) -> int:
 	return data.get_block(position)
 
 
 func rebuild_mesh() -> void:
+	build_mesh_only()
+	build_collision_only()
+
+
+func build_mesh_only() -> void:
 	mesh = mesher.build(data, Callable(self, "get_neighbor_block"))
+
+
+func apply_mesh_data(mesh_data: Dictionary) -> void:
+	mesh = mesher.create_mesh(mesh_data)
+
+
+func build_collision_only() -> void:
 	collision_builder.rebuild(self, self)
 
 
