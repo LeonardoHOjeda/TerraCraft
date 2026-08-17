@@ -50,6 +50,8 @@ func update_target() -> void:
 		floor(hit_position.y + hit_normal.y * 0.01),
 		floor(hit_position.z + hit_normal.z * 0.01)
 	)
+	if result.collider.has_meta("special_local_position") and chunk != null:
+		block_position = chunk.local_to_world(result.collider.get_meta("special_local_position"))
 
 	current_target.is_valid = true
 	current_target.collider = result.collider

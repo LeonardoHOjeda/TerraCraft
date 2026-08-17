@@ -1,7 +1,20 @@
-[gd_resource type="StandardMaterial3D" format=3 uid="uid://dk6pr0xp3x3ps"]
+[gd_resource type="ShaderMaterial" load_steps=3 format=3 uid="uid://dk6pr0xp3x3ps"]
 
-[ext_resource type="Texture2D" uid="uid://uhemud13dr3i" path="res://blocks/textures/Atlas.png" id="1_3b6p3"]
+[ext_resource type="Texture2D" uid="uid://blch1pv3aohmf" path="res://blocks/textures/atlas.png" id="1_3b6p3"]
+
+[sub_resource type="Shader" id="Shader_block_light"]
+code = "shader_type spatial;
+render_mode depth_draw_opaque, cull_back;
+
+uniform sampler2D atlas_texture : source_color, filter_nearest, repeat_disable;
+
+void fragment() {
+	vec4 tex = texture(atlas_texture, UV);
+	ALBEDO = tex.rgb;
+	EMISSION = tex.rgb * COLOR.rgb;
+}
+"
 
 [resource]
-albedo_texture = ExtResource("1_3b6p3")
-texture_filter = 0
+shader = SubResource("Shader_block_light")
+shader_parameter/atlas_texture = ExtResource("1_3b6p3")

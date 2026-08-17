@@ -53,6 +53,10 @@ Biome: %s
 Biome Value: %.3f
 Seed: %d
 FPS: %d
+Torch lights loaded: %d
+Block light: %d
+BlockLight updates: %d
+BlockLight last: %.2f ms / %d chunks
 """ % [
 		position.x,
 		position.y,
@@ -65,7 +69,12 @@ FPS: %d
 		biome_name,
 		biome_value,
 		world.seed,
-		Engine.get_frames_per_second()
+		Engine.get_frames_per_second(),
+		world.get_loaded_torch_light_count(),
+		world.get_block_light_at_world_position(block_position),
+		world.block_light_update_count,
+		float(world.block_light_last_update_usec) / 1000.0,
+		world.block_light_last_changed_chunks
 	]
 
 

@@ -43,7 +43,8 @@ enum Item {
 	IRON_PICKAXE,
 	WOODEN_AXE,
 	STONE_AXE,
-	IRON_AXE
+	IRON_AXE,
+	TORCH
 }
 
 
@@ -94,6 +95,9 @@ static func get_drop(block: int) -> int:
 		BlockRegistry.Block.FURNACE:
 			return Item.FURNACE
 
+		BlockRegistry.Block.TORCH:
+			return Item.TORCH
+
 	return Item.NONE
 
 # Funcion para obtener la textura de lo que sueltan los bloques minados
@@ -129,6 +133,8 @@ static func get_texture_position(item: int) -> Vector2i:
 			return BlockRegistry.TEXTURE_WORKBENCH
 		Item.FURNACE:
 			return BlockRegistry.TEXTURE_FURNACE
+		Item.TORCH:
+			return BlockRegistry.TEXTURE_TORCH
 		Item.WOODEN_PICKAXE:
 			return Vector2i(9,1)
 		Item.STONE_PICKAXE:
@@ -169,6 +175,9 @@ static func get_placeable_block(item_id: int) -> int:
 
 		Item.FURNACE:
 			return BlockRegistry.Block.FURNACE
+
+		Item.TORCH:
+			return BlockRegistry.Block.TORCH
 
 	return BlockRegistry.Block.AIR
 
@@ -236,6 +245,8 @@ static func get_item_name(item_id: int) -> String:
 			return "Mesa de trabajo"
 		Item.FURNACE:
 			return "Horno"
+		Item.TORCH:
+			return "Antorcha"
 		Item.WOODEN_PICKAXE:
 			return "Pico de madera"
 		Item.STONE_PICKAXE:
@@ -278,7 +289,7 @@ static func get_mining_speed(item_id: int) -> float:
 		Item.IRON_PICKAXE:
 			return 6.0
 		Item.WOODEN_AXE:
-			return 0.8
+			return 0.6
 		Item.STONE_AXE:
 			return 1.4
 		Item.IRON_AXE:

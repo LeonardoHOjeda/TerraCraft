@@ -15,6 +15,14 @@ var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
 var collision_builder := ChunkCollisionBuilder.new()
 var collision_section_mesh_data: Array[Dictionary] = []
+var special_blocks_root: Node3D
+var special_block_nodes: Dictionary = {}
+
+
+func _ready() -> void:
+	special_blocks_root = Node3D.new()
+	special_blocks_root.name = "SpecialBlocks"
+	add_child(special_blocks_root)
 
 
 static func from_collider(collider: Object) -> Chunk:
@@ -105,12 +113,14 @@ func initialize(
 		new_terrain_height,
 		new_base_height
 	)
+	rebuild_special_blocks()
 
 
 func initialize_from_data(new_world: World, new_chunk_position: Vector2i, new_data: ChunkData) -> void:
 	world = new_world
 	chunk_position = new_chunk_position
 	data = new_data
+	rebuild_special_blocks()
 
 
 func get_block(position: Vector3i) -> int:
@@ -164,6 +174,7 @@ func remove_block(position: Vector3i) -> int:
 		return BlockRegistry.Block.AIR
 
 	data.set_block(position, BlockRegistry.Block.AIR)
+	remove_special_block(position)
 
 	return block
 
@@ -175,7 +186,18 @@ func place_block(position: Vector3i, block: int) -> bool:
 		return false
 
 	data.set_block(position, block)
+	sync_special_block(position)
 
+	return true
+
+
+func place_oriented_block_local(position: Vector3i, block: int, support_direction: Vector3i) -> bool:
+	if not data.is_valid_position(position) or data.get_block(position) != BlockRegistry.Block.AIR:
+		return false
+	if world != null:
+		world.set_special_block_support(chunk_position, position, support_direction)
+	data.set_block(position, block)
+	sync_special_block(position)
 	return true
 
 
@@ -201,7 +223,108 @@ func set_block_without_rebuild(position: Vector3i, block: int) -> bool:
 		return false
 
 	data.set_block(position, block)
+	sync_special_block(position)
 	return true
+
+
+func rebuild_special_blocks() -> void:
+	for node in special_block_nodes.values():
+		(node as Node).queue_free()
+	special_block_nodes.clear()
+	for x in SIZE_XZ:
+		for y in HEIGHT:
+			for z in SIZE_XZ:
+				var local_position := Vector3i(x, y, z)
+				if BlockRegistry.is_special_block(data.get_block(local_position)):
+					create_special_block(local_position)
+
+
+func sync_special_block(local_position: Vector3i) -> void:
+	remove_special_block(local_position)
+	if BlockRegistry.is_special_block(data.get_block(local_position)):
+		create_special_block(local_position)
+
+
+func remove_special_block(local_position: Vector3i) -> void:
+	var node := special_block_nodes.get(local_position) as Node3D
+	if node != null:
+		node.queue_free()
+		special_block_nodes.erase(local_position)
+	if world != null and data.get_block(local_position) == BlockRegistry.Block.AIR:
+		world.clear_special_block_metadata(chunk_position, local_position)
+
+
+func create_special_block(local_position: Vector3i) -> void:
+	if special_blocks_root == null or special_block_nodes.has(local_position):
+		return
+	var torch := Node3D.new()
+	torch.name = "Torch_%d_%d_%d" % [local_position.x, local_position.y, local_position.z]
+	torch.position = Vector3(local_position) + Vector3(0.5, 0.0, 0.5)
+	special_blocks_root.add_child(torch)
+	var support_direction := Vector3i.DOWN
+	if world != null:
+		support_direction = world.get_special_block_support(chunk_position, local_position)
+	var outward := -Vector3(support_direction)
+	var shaft_direction := Vector3.UP
+	var base_position := Vector3.ZERO
+	if support_direction != Vector3i.DOWN:
+		shaft_direction = (Vector3.UP * 0.88 + outward * 0.48).normalized()
+		base_position = Vector3(support_direction) * 0.39 + Vector3.UP * 0.2
+	var shaft_rotation := Quaternion(Vector3.UP, shaft_direction)
+
+	var stick := MeshInstance3D.new()
+	var stick_mesh := BoxMesh.new()
+	stick_mesh.size = Vector3(0.11, 0.62, 0.11)
+	stick.mesh = stick_mesh
+	stick.position = base_position + shaft_direction * 0.31
+	stick.quaternion = shaft_rotation
+	var stick_material := StandardMaterial3D.new()
+	stick_material.albedo_color = Color(0.22, 0.09, 0.035)
+	stick.material_override = stick_material
+	torch.add_child(stick)
+
+	var ember := MeshInstance3D.new()
+	var ember_mesh := BoxMesh.new()
+	ember_mesh.size = Vector3(0.15, 0.14, 0.15)
+	ember.mesh = ember_mesh
+	ember.position = base_position + shaft_direction * 0.59
+	ember.quaternion = shaft_rotation
+	var ember_material := StandardMaterial3D.new()
+	ember_material.albedo_color = Color(0.12, 0.055, 0.025)
+	ember.material_override = ember_material
+	torch.add_child(ember)
+
+	var tip := MeshInstance3D.new()
+	var tip_mesh := BoxMesh.new()
+	tip_mesh.size = Vector3(0.2, 0.22, 0.2)
+	tip.mesh = tip_mesh
+	tip.position = base_position + shaft_direction * 0.68
+	tip.quaternion = shaft_rotation
+	var tip_material := StandardMaterial3D.new()
+	tip_material.albedo_color = Color(1.0, 0.64, 0.16)
+	tip_material.emission_enabled = true
+	tip_material.emission = Color(1.0, 0.34, 0.04)
+	tip_material.emission_energy_multiplier = 2.0
+	tip.material_override = tip_material
+	torch.add_child(tip)
+
+	var body := StaticBody3D.new()
+	body.set_meta("chunk", self)
+	body.set_meta("special_local_position", local_position)
+	body.set_meta("special_block", BlockRegistry.Block.TORCH)
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(0.18, 0.72, 0.18)
+	collision.shape = shape
+	collision.position = base_position + shaft_direction * 0.36
+	collision.quaternion = shaft_rotation
+	body.add_child(collision)
+	torch.add_child(body)
+	special_block_nodes[local_position] = torch
+
+
+func get_torch_light_count() -> int:
+	return 0
 
 func get_neighbor_block(local_position: Vector3i) -> int:
 	if (

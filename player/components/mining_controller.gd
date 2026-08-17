@@ -37,6 +37,10 @@ func process_mining(delta: float) -> void:
 	if block == BlockRegistry.Block.AIR or block == BlockRegistry.Block.BEDROCK or not can_mine_block(block):
 		reset_mining()
 		return
+	if BlockRegistry.is_instant_break(block):
+		break_target_block(target)
+		reset_mining()
+		return
 	if not is_mining or mining_block_position != block_position:
 		mining_block_position = block_position
 		mining_progress = 0.0
@@ -77,6 +81,7 @@ func break_target_block(target) -> void:
 	if broken_block == BlockRegistry.Block.AIR:
 		return
 	world.rebuild_chunk_and_neighbors(chunk, local_position)
+	world.break_torches_supported_by(block_position)
 	var dropped_item := ItemRegistry.get_drop(broken_block)
 	if dropped_item == ItemRegistry.Item.NONE:
 		return

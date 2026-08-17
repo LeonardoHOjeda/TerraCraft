@@ -22,7 +22,8 @@ enum Block {
   STICK,
   IRON_ORE,
   WORKBENCH,
-  FURNACE
+  FURNACE,
+	TORCH
 }
 
 const ATLAS_SIZE := 16
@@ -51,6 +52,33 @@ const TEXTURE_IRON_ORE := Vector2i(5, 1)
 const TEXTURE_WORKBENCH := Vector2i(6, 1)
 const TEXTURE_FURNACE := Vector2i(8, 1)
 const TEXTURE_IRON_INGOT := Vector2i(12, 1)
+const TEXTURE_TORCH := Vector2i(4, 1) # Temporary inventory icon: reuse the stick tile.
+
+
+static func is_special_block(block: int) -> bool:
+	return block == Block.TORCH
+
+
+static func is_mesh_block(block: int) -> bool:
+	return block != Block.AIR and not is_special_block(block)
+
+
+static func is_occluding_block(block: int) -> bool:
+	return is_mesh_block(block)
+
+
+static func is_instant_break(block: int) -> bool:
+	return block == Block.TORCH
+
+
+static func get_light_emission(block: int) -> int:
+	if block == Block.TORCH:
+		return 14
+	return 0
+
+
+static func is_light_transparent(block: int) -> bool:
+	return block == Block.AIR or is_special_block(block)
 
 
 static func get_preferred_tool(block: int) -> ItemRegistry.ToolType:

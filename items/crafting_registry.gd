@@ -28,6 +28,16 @@ const RECIPES := [
 		}
 	},
 	{
+		"name": "Antorchas",
+		"output_item": ItemRegistry.Item.TORCH,
+		"output_amount": 4,
+		"station": Station.NONE,
+		"ingredients": {
+			ItemRegistry.Item.COAL: 1,
+			ItemRegistry.Item.STICK: 1
+		}
+	},
+	{
 		"name": "Mesa de trabajo",
 		"output_item": ItemRegistry.Item.WORKBENCH,
 		"output_amount": 1,

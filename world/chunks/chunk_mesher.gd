@@ -17,6 +17,7 @@ const DIRECTIONS := [
 var vertices := PackedVector3Array()
 var normals := PackedVector3Array()
 var uvs := PackedVector2Array()
+var colors := PackedColorArray()
 var indices := PackedInt32Array()
 var section_vertices: Array[PackedVector3Array] = []
 var section_normals: Array[PackedVector3Array] = []
@@ -39,13 +40,13 @@ func build_mesh_data(snapshot: Dictionary) -> Dictionary:
 		for y in ChunkData.HEIGHT:
 			for z in ChunkData.SIZE_XZ:
 				var block: int = data.get_block(Vector3i(x, y, z))
-				if block == BlockRegistry.Block.AIR:
+				if not BlockRegistry.is_mesh_block(block):
 					continue
 				var block_position := Vector3i(x, y, z)
 				for direction in DIRECTIONS:
 					var neighbor_position = block_position + direction
-					if get_snapshot_block(snapshot, neighbor_position) == BlockRegistry.Block.AIR:
-						add_face(block_position, direction, block)
+					if not BlockRegistry.is_occluding_block(get_snapshot_block(snapshot, neighbor_position)):
+						add_face(block_position, direction, block, get_snapshot_light(snapshot, neighbor_position))
 	var mesh_data := get_mesh_data()
 	mesh_data["worker_usec"] = Time.get_ticks_usec() - started_at
 	return mesh_data
@@ -55,6 +56,7 @@ func reset_buffers() -> void:
 	vertices.clear()
 	normals.clear()
 	uvs.clear()
+	colors.clear()
 	indices.clear()
 	section_vertices.clear()
 	section_normals.clear()
@@ -73,7 +75,7 @@ func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
 			for z in ChunkData.SIZE_XZ:
 				var block: int = data.get_block(Vector3i(x, y, z))
 
-				if block == BlockRegistry.Block.AIR:
+				if not BlockRegistry.is_mesh_block(block):
 					continue
 
 				var block_position := Vector3i(x, y, z)
@@ -81,11 +83,12 @@ func build_geometry(data: ChunkData, neighbor_block_provider: Callable) -> void:
 				for direction in DIRECTIONS:
 					var neighbor_position = block_position + direction
 
-					if neighbor_block_provider.call(neighbor_position) == BlockRegistry.Block.AIR:
+					if not BlockRegistry.is_occluding_block(neighbor_block_provider.call(neighbor_position)):
 						add_face(
 							block_position,
 							direction,
-							block
+							block,
+							get_neighbor_light(data, neighbor_position)
 						)
 
 
@@ -95,6 +98,7 @@ func get_mesh_data() -> Dictionary:
 		"vertices": vertices,
 		"normals": normals,
 		"uvs": uvs,
+		"colors": colors,
 		"indices": indices,
 		"collision_sections": last_collision_sections,
 	}
@@ -118,6 +122,8 @@ func create_mesh(mesh_data: Dictionary) -> ArrayMesh:
 	arrays[Mesh.ARRAY_VERTEX] = mesh_data["vertices"]
 	arrays[Mesh.ARRAY_NORMAL] = mesh_data["normals"]
 	arrays[Mesh.ARRAY_TEX_UV] = mesh_data["uvs"]
+	if mesh_data.has("colors"):
+		arrays[Mesh.ARRAY_COLOR] = mesh_data["colors"]
 	arrays[Mesh.ARRAY_INDEX] = mesh_data["indices"]
 
 	var generated_mesh := ArrayMesh.new()
@@ -145,12 +151,33 @@ func get_snapshot_block(snapshot: Dictionary, position: Vector3i) -> int:
 	return snapshot["positive_z"][position.y * ChunkData.SIZE_XZ + position.x]
 
 
-func add_face(block_position: Vector3i, direction: Vector3i, block: int) -> void:
+func get_snapshot_light(snapshot: Dictionary, position: Vector3i) -> int:
+	if position.y < 0 or position.y >= ChunkData.HEIGHT:
+		return 0
+	if position.x >= 0 and position.x < ChunkData.SIZE_XZ and position.z >= 0 and position.z < ChunkData.SIZE_XZ:
+		var data: ChunkData = snapshot["data"]
+		return data.get_block_light(position)
+	if position.x < 0:
+		return snapshot["negative_x_light"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.x >= ChunkData.SIZE_XZ:
+		return snapshot["positive_x_light"][position.y * ChunkData.SIZE_XZ + position.z]
+	if position.z < 0:
+		return snapshot["negative_z_light"][position.y * ChunkData.SIZE_XZ + position.x]
+	return snapshot["positive_z_light"][position.y * ChunkData.SIZE_XZ + position.x]
+
+
+func get_neighbor_light(data: ChunkData, position: Vector3i) -> int:
+	return data.get_block_light(position)
+
+
+func add_face(block_position: Vector3i, direction: Vector3i, block: int, light_level: int) -> void:
 	var face_vertices := get_face_vertices(direction)
 	var texture_position := get_block_texture(block, direction)
 	var face_uvs := get_atlas_uvs(texture_position)
 
 	var start_index := vertices.size()
+	var light_ratio := float(clampi(light_level, 0, 15)) / 15.0
+	var brightness := pow(light_ratio, 1.35)
 
 	for i in face_vertices.size():
 		vertices.append(
@@ -159,6 +186,7 @@ func add_face(block_position: Vector3i, direction: Vector3i, block: int) -> void
 
 		normals.append(Vector3(direction))
 		uvs.append(face_uvs[i])
+		colors.append(Color(brightness, brightness, brightness, 1.0))
 
 	indices.append(start_index)
 	indices.append(start_index + 2)

@@ -33,11 +33,25 @@ func place_block() -> void:
 	var selected_block: int = hotbar_controller.get_selected_block()
 	if selected_block == BlockRegistry.Block.AIR:
 		return
+	var support_direction := Vector3i.DOWN
+	if selected_block == BlockRegistry.Block.TORCH:
+		var hit_direction := Vector3i(roundi(target.hit_normal.x), roundi(target.hit_normal.y), roundi(target.hit_normal.z))
+		if hit_direction == Vector3i.DOWN or hit_direction == Vector3i.ZERO:
+			return
+		support_direction = -hit_direction
+		var support_position := block_position + support_direction
+		if not BlockRegistry.is_occluding_block(world.get_block_at_world_position(support_position)):
+			return
 	var target_chunk := world.get_chunk_at_world_position(block_position)
 	if target_chunk == null:
 		return
 	var local_position := target_chunk.world_to_local(block_position)
-	if target_chunk.place_block_local(local_position, selected_block):
+	var placed := false
+	if selected_block == BlockRegistry.Block.TORCH:
+		placed = target_chunk.place_oriented_block_local(local_position, selected_block, support_direction)
+	else:
+		placed = target_chunk.place_block_local(local_position, selected_block)
+	if placed:
 		world.rebuild_chunk_and_neighbors(target_chunk, local_position)
 		hotbar_controller.consume_selected_item(1)
 

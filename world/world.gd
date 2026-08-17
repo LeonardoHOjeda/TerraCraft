@@ -72,9 +72,13 @@ var gameplay_collision_deadlines: Dictionary = {}
 var gameplay_change_counts: Dictionary = {}
 var gameplay_visual_rebuild_counts: Dictionary = {}
 var chunk_overrides: Dictionary = {}
+var special_block_metadata: Dictionary = {}
 var pending_collision_sections: Dictionary = {}
 var gameplay_collision_section_counts: Dictionary = {}
 var timing_samples_logged: int = 0
+var block_light_update_count: int = 0
+var block_light_last_update_usec: int = 0
+var block_light_last_changed_chunks: int = 0
 var current_player_chunk := INVALID_CHUNK_POSITION
 var player: Node3D
 
@@ -322,6 +326,7 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	add_child(chunk)
 	loaded_chunks[chunk_position] = chunk
 	chunk.initialize_from_data(self, chunk_position, result["data"])
+	var light_changed_chunks := initialize_chunk_block_light(chunk)
 	if log_chunk_override_application and int(result.get("override_count", 0)) > 0:
 		print(
 			"Chunk (%d,%d): applying %d block overrides"
@@ -331,6 +336,9 @@ func apply_generated_data(chunk_position: Vector2i, result: Dictionary) -> void:
 	chunk_timings[chunk_position]["generation_worker_usec"] = result["worker_usec"]
 	chunk_stages[chunk_position] = ChunkStage.BUILD_MESH_DATA
 	enqueue_work(chunk_position)
+	for changed_position in light_changed_chunks:
+		if changed_position != chunk_position:
+			request_chunk_rebuild(changed_position)
 
 
 func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
@@ -339,16 +347,28 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	var positive_x := create_empty_boundary()
 	var negative_z := create_empty_boundary()
 	var positive_z := create_empty_boundary()
+	var negative_x_light := create_empty_light_boundary()
+	var positive_x_light := create_empty_light_boundary()
+	var negative_z_light := create_empty_light_boundary()
+	var positive_z_light := create_empty_light_boundary()
 	copy_neighbor_x_boundary(negative_x, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_x_boundary(positive_x, chunk_position + Vector2i.RIGHT, 0)
 	copy_neighbor_z_boundary(negative_z, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
 	copy_neighbor_z_boundary(positive_z, chunk_position + Vector2i.DOWN, 0)
+	copy_neighbor_x_light_boundary(negative_x_light, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_x_light_boundary(positive_x_light, chunk_position + Vector2i.RIGHT, 0)
+	copy_neighbor_z_light_boundary(negative_z_light, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
+	copy_neighbor_z_light_boundary(positive_z_light, chunk_position + Vector2i.DOWN, 0)
 	return {
 		"data": chunk.data.duplicate_data(),
 		"negative_x": negative_x,
 		"positive_x": positive_x,
 		"negative_z": negative_z,
 		"positive_z": positive_z,
+		"negative_x_light": negative_x_light,
+		"positive_x_light": positive_x_light,
+		"negative_z_light": negative_z_light,
+		"positive_z_light": positive_z_light,
 	}
 
 
@@ -356,6 +376,13 @@ func create_empty_boundary() -> PackedInt32Array:
 	var boundary := PackedInt32Array()
 	boundary.resize(ChunkData.HEIGHT * ChunkData.SIZE_XZ)
 	boundary.fill(BlockRegistry.Block.AIR)
+	return boundary
+
+
+func create_empty_light_boundary() -> PackedByteArray:
+	var boundary := PackedByteArray()
+	boundary.resize(ChunkData.HEIGHT * ChunkData.SIZE_XZ)
+	boundary.fill(0)
 	return boundary
 
 
@@ -375,6 +402,24 @@ func copy_neighbor_z_boundary(target: PackedInt32Array, neighbor_position: Vecto
 	for y in ChunkData.HEIGHT:
 		for x in ChunkData.SIZE_XZ:
 			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block(Vector3i(x, y, source_z))
+
+
+func copy_neighbor_x_light_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_x: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for z in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_block_light(Vector3i(source_x, y, z))
+
+
+func copy_neighbor_z_light_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_z: int) -> void:
+	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
+	if neighbor == null:
+		return
+	for y in ChunkData.HEIGHT:
+		for x in ChunkData.SIZE_XZ:
+			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block_light(Vector3i(x, y, source_z))
 
 
 func apply_chunk_mesh(chunk_position: Vector2i) -> void:
@@ -570,10 +615,19 @@ func print_chunk_timing(chunk_position: Vector2i, is_rebuild: bool) -> void:
 
 func unload_chunk(chunk_position: Vector2i) -> void:
 	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	var departed_sources: Array[Dictionary] = []
 	if chunk != null:
+		for x in Chunk.SIZE_XZ:
+			for y in Chunk.HEIGHT:
+				for z in Chunk.SIZE_XZ:
+					var local_position := Vector3i(x, y, z)
+					var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
+					if emission > 0:
+						departed_sources.append({"position": chunk.local_to_world(local_position), "level": emission})
 		# Future persistence hook: save modified block overrides before removing this chunk.
 		chunk.queue_free()
 	loaded_chunks.erase(chunk_position)
+	var light_changed_chunks := remove_departed_light_sources(departed_sources)
 	chunk_stages.erase(chunk_position)
 	initial_chunks.erase(chunk_position)
 	chunk_timings.erase(chunk_position)
@@ -587,6 +641,8 @@ func unload_chunk(chunk_position: Vector2i) -> void:
 	pending_collision_sections.erase(chunk_position)
 	gameplay_collision_section_counts.erase(chunk_position)
 	request_cardinal_neighbor_rebuilds(chunk_position)
+	for changed_position in light_changed_chunks:
+		request_chunk_rebuild(changed_position)
 
 
 func request_cardinal_neighbor_rebuilds(chunk_position: Vector2i) -> void:
@@ -697,6 +753,175 @@ func get_block_at_world_position(position: Vector3i) -> int:
 	return chunk.get_block_local(chunk.world_to_local(position))
 
 
+func get_block_light_at_world_position(position: Vector3i) -> int:
+	var chunk := get_chunk_at_world_position(position)
+	if chunk == null:
+		return 0
+	return chunk.data.get_block_light(chunk.world_to_local(position))
+
+
+func set_block_light_at_world_position(position: Vector3i, level: int, changed_chunks: Dictionary) -> bool:
+	var chunk := get_chunk_at_world_position(position)
+	if chunk == null:
+		return false
+	var local_position := chunk.world_to_local(position)
+	var clamped_level := clampi(level, 0, 15)
+	if chunk.data.get_block_light(local_position) == clamped_level:
+		return false
+	chunk.data.set_block_light(local_position, clamped_level)
+	changed_chunks[chunk.chunk_position] = true
+	return true
+
+
+func initialize_chunk_block_light(chunk: Chunk) -> Dictionary:
+	var changed_chunks: Dictionary = {}
+	var propagation_queue: Array[Vector3i] = []
+	chunk.data.block_light.fill(0)
+	for x in Chunk.SIZE_XZ:
+		for y in Chunk.HEIGHT:
+			for z in Chunk.SIZE_XZ:
+				var local_position := Vector3i(x, y, z)
+				var emission := BlockRegistry.get_light_emission(chunk.data.get_block(local_position))
+				if emission > 0:
+					chunk.data.set_block_light(local_position, emission)
+					propagation_queue.append(chunk.local_to_world(local_position))
+	for y in Chunk.HEIGHT:
+		for edge in Chunk.SIZE_XZ:
+			for local_position in [Vector3i(0, y, edge), Vector3i(Chunk.SIZE_XZ - 1, y, edge), Vector3i(edge, y, 0), Vector3i(edge, y, Chunk.SIZE_XZ - 1)]:
+				var world_position := chunk.local_to_world(local_position)
+				for direction in TREE_LOG_DIRECTIONS:
+					var neighbor_position := world_position + direction
+					if get_chunk_at_world_position(neighbor_position) != chunk and get_block_light_at_world_position(neighbor_position) > 1:
+						propagation_queue.append(neighbor_position)
+	propagate_block_light(propagation_queue, changed_chunks)
+	return changed_chunks
+
+
+func update_block_light_after_change(world_position: Vector3i) -> Dictionary:
+	var started_at := Time.get_ticks_usec()
+	var changed_chunks: Dictionary = {}
+	var removal_queue: Array[Dictionary] = []
+	var propagation_queue: Array[Vector3i] = []
+	var old_level := get_block_light_at_world_position(world_position)
+	var block := get_block_at_world_position(world_position)
+	var emission := BlockRegistry.get_light_emission(block)
+	var target_level := emission if BlockRegistry.is_light_transparent(block) else 0
+	if old_level > target_level:
+		set_block_light_at_world_position(world_position, target_level, changed_chunks)
+		removal_queue.append({"position": world_position, "level": old_level})
+	elif target_level > old_level:
+		set_block_light_at_world_position(world_position, target_level, changed_chunks)
+		propagation_queue.append(world_position)
+	for direction in TREE_LOG_DIRECTIONS:
+		var neighbor_position := world_position + direction
+		if get_block_light_at_world_position(neighbor_position) > 0:
+			propagation_queue.append(neighbor_position)
+	process_block_light_removal(removal_queue, propagation_queue, changed_chunks)
+	propagate_block_light(propagation_queue, changed_chunks)
+	block_light_update_count += 1
+	block_light_last_update_usec = Time.get_ticks_usec() - started_at
+	block_light_last_changed_chunks = changed_chunks.size()
+	return changed_chunks
+
+
+func process_block_light_removal(removal_queue: Array[Dictionary], propagation_queue: Array[Vector3i], changed_chunks: Dictionary) -> void:
+	var index := 0
+	while index < removal_queue.size():
+		var entry: Dictionary = removal_queue[index]
+		index += 1
+		var position: Vector3i = entry["position"]
+		var removed_level: int = entry["level"]
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor_position := position + direction
+			var neighbor_level := get_block_light_at_world_position(neighbor_position)
+			if neighbor_level <= 0:
+				continue
+			var neighbor_emission := BlockRegistry.get_light_emission(get_block_at_world_position(neighbor_position))
+			if neighbor_level < removed_level and neighbor_level > neighbor_emission:
+				set_block_light_at_world_position(neighbor_position, neighbor_emission, changed_chunks)
+				removal_queue.append({"position": neighbor_position, "level": neighbor_level})
+				if neighbor_emission > 0:
+					propagation_queue.append(neighbor_position)
+			else:
+				propagation_queue.append(neighbor_position)
+
+
+func propagate_block_light(propagation_queue: Array[Vector3i], changed_chunks: Dictionary) -> void:
+	var index := 0
+	while index < propagation_queue.size():
+		var position := propagation_queue[index]
+		index += 1
+		var level := maxi(get_block_light_at_world_position(position), BlockRegistry.get_light_emission(get_block_at_world_position(position)))
+		if level <= 1:
+			continue
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor_position := position + direction
+			var neighbor_chunk := get_chunk_at_world_position(neighbor_position)
+			if neighbor_chunk == null:
+				continue
+			var neighbor_block := get_block_at_world_position(neighbor_position)
+			if not BlockRegistry.is_light_transparent(neighbor_block):
+				continue
+			var desired_level := maxi(level - 1, BlockRegistry.get_light_emission(neighbor_block))
+			if desired_level <= get_block_light_at_world_position(neighbor_position):
+				continue
+			set_block_light_at_world_position(neighbor_position, desired_level, changed_chunks)
+			propagation_queue.append(neighbor_position)
+
+
+func remove_departed_light_sources(sources: Array[Dictionary]) -> Dictionary:
+	var started_at := Time.get_ticks_usec()
+	var changed_chunks: Dictionary = {}
+	var propagation_queue: Array[Vector3i] = []
+	process_block_light_removal(sources, propagation_queue, changed_chunks)
+	propagate_block_light(propagation_queue, changed_chunks)
+	if not sources.is_empty():
+		block_light_update_count += 1
+		block_light_last_update_usec = Time.get_ticks_usec() - started_at
+		block_light_last_changed_chunks = changed_chunks.size()
+	return changed_chunks
+
+
+func set_special_block_support(chunk_position: Vector2i, local_position: Vector3i, support_direction: Vector3i) -> void:
+	var chunk_metadata: Dictionary = special_block_metadata.get(chunk_position, {})
+	chunk_metadata[local_position] = {"support_direction": support_direction}
+	special_block_metadata[chunk_position] = chunk_metadata
+
+
+func get_special_block_support(chunk_position: Vector2i, local_position: Vector3i) -> Vector3i:
+	var chunk_metadata: Dictionary = special_block_metadata.get(chunk_position, {})
+	var metadata: Dictionary = chunk_metadata.get(local_position, {})
+	return metadata.get("support_direction", Vector3i.DOWN)
+
+
+func clear_special_block_metadata(chunk_position: Vector2i, local_position: Vector3i) -> void:
+	var chunk_metadata: Dictionary = special_block_metadata.get(chunk_position, {})
+	chunk_metadata.erase(local_position)
+	if chunk_metadata.is_empty():
+		special_block_metadata.erase(chunk_position)
+	else:
+		special_block_metadata[chunk_position] = chunk_metadata
+
+
+func break_torches_supported_by(support_world_position: Vector3i) -> void:
+	var candidate_directions: Array[Vector3i] = [Vector3i.UP, Vector3i.LEFT, Vector3i.RIGHT, Vector3i.FORWARD, Vector3i.BACK]
+	for offset in candidate_directions:
+		var torch_world_position := support_world_position + offset
+		var chunk := get_chunk_at_world_position(torch_world_position)
+		if chunk == null:
+			continue
+		var local_position := chunk.world_to_local(torch_world_position)
+		if chunk.get_block_local(local_position) != BlockRegistry.Block.TORCH:
+			continue
+		var support_direction := get_special_block_support(chunk.chunk_position, local_position)
+		if torch_world_position + support_direction != support_world_position:
+			continue
+		if chunk.remove_block_local(local_position) != BlockRegistry.Block.TORCH:
+			continue
+		rebuild_chunk_and_neighbors(chunk, local_position)
+		spawn_item(ItemRegistry.Item.TORCH, Vector3(torch_world_position) + Vector3(0.5, 0.35, 0.5))
+
+
 func set_block_at_world_position(position: Vector3i, block: int, affected_chunks: Dictionary) -> void:
 	var chunk := get_chunk_at_world_position(position)
 	if chunk == null:
@@ -763,6 +988,7 @@ func fell_tree(start_position: Vector3i) -> bool:
 		var broken_block := chunk.remove_block_local(local_position)
 		if broken_block != BlockRegistry.Block.WOOD:
 			continue
+		break_torches_supported_by(position)
 		record_block_override(chunk, local_position)
 		modified_chunks[chunk.chunk_position] = true
 		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position.y)
@@ -884,12 +1110,24 @@ func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
 	dropped_item.global_position = position
 
 
+func get_loaded_torch_light_count() -> int:
+	var total := 0
+	for chunk in loaded_chunks.values():
+		if chunk is Chunk:
+			total += (chunk as Chunk).get_torch_light_count()
+	return total
+
+
 func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void:
 	record_block_override(chunk, local_position)
+	var light_changed_chunks := update_block_light_after_change(chunk.local_to_world(local_position))
 	var collision_sections := get_affected_collision_sections(local_position.y)
 	request_chunk_rebuild(chunk.chunk_position, true, collision_sections)
 	for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
 		request_chunk_rebuild(neighbor_position, true, collision_sections)
+	for changed_position in light_changed_chunks:
+		if changed_position != chunk.chunk_position and not chunk.get_affected_neighbor_positions(local_position).has(changed_position):
+			request_chunk_rebuild(changed_position, true)
 
 
 func get_affected_collision_sections(local_y: int) -> Array[int]:
