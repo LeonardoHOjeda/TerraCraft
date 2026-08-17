@@ -35,10 +35,10 @@ environment = SubResource("Environment_caves")
 [node name="World" parent="." unique_id=1814533164 instance=ExtResource("4_lquwl")]
 player_path = NodePath("../Player")
 streaming_steps_per_frame = 4
-max_background_jobs = 1
 streaming_main_thread_budget_ms = 3.0
-log_streaming_main_thread_frames = true
+log_chunk_timings = false
 log_gameplay_collision_stats = true
+log_stutter_frames = true
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 50, 8)

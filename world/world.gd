@@ -3,6 +3,7 @@ extends Node3D
 
 const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 const MAX_TREE_LOGS := 64
+const MAX_BACKGROUND_STREAMING_JOBS := 1
 const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 	Vector3i.UP,
 	Vector3i.DOWN,
@@ -17,9 +18,10 @@ const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 @export_range(0, 32, 1) var load_distance: int = 3
 @export_range(1, 40, 1) var unload_distance: int = 4
 @export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
-@export_range(1, 8, 1) var max_background_jobs: int = 2
 @export_range(0.5, 20.0, 0.5) var streaming_main_thread_budget_ms: float = 4.0
 @export var log_streaming_main_thread_frames: bool = false
+@export var log_stutter_frames: bool = false
+@export_range(1.0, 240.0, 1.0) var stutter_fps_threshold: float = 55.0
 @export var log_chunk_timings: bool = true
 @export var log_chunk_load_profile: bool = false
 @export_range(1, 100, 1) var timing_samples_to_log: int = 12
@@ -97,7 +99,11 @@ var streaming_main_used_usec: int = 0
 var streaming_main_tasks_executed: int = 0
 var streaming_main_deferred_tasks: int = 0
 var streaming_main_last_tasks: Array[String] = []
+var streaming_main_last_task_details: Array[Dictionary] = []
+var streaming_main_task_total_usec: int = 0
 var streaming_main_frame_started_usec: int = 0
+var previous_streaming_frame_profile: Dictionary = {}
+var worst_stutter_frames: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -109,6 +115,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if log_stutter_frames:
+		print_stutter_top_frames()
 	for job in active_jobs:
 		var thread: Thread = job["thread"]
 		if thread.is_started():
@@ -117,6 +125,7 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
+	profile_previous_frame_stutter(_delta)
 	if player == null:
 		resolve_player()
 		if player == null:
@@ -133,10 +142,9 @@ func _process(_delta: float) -> void:
 	collect_finished_jobs()
 	enqueue_due_gameplay_collisions()
 	process_main_thread_queue(true)
-	start_background_jobs()
 	process_one_pending_generation_result()
-	start_background_jobs()
 	process_main_thread_queue(false)
+	start_background_jobs()
 	finish_streaming_main_frame()
 
 
@@ -145,6 +153,8 @@ func begin_streaming_main_frame() -> void:
 	streaming_main_used_usec = 0
 	streaming_main_tasks_executed = 0
 	streaming_main_last_tasks.clear()
+	streaming_main_last_task_details.clear()
+	streaming_main_task_total_usec = 0
 
 
 func streaming_budget_reached() -> bool:
@@ -156,15 +166,34 @@ func streaming_budget_reached() -> bool:
 	)
 
 
-func record_streaming_main_task(task_name: String) -> void:
+func record_streaming_main_task(
+	task_name: String, task_started_usec: int, breakdown: Dictionary = {}
+) -> void:
+	var duration_usec := Time.get_ticks_usec() - task_started_usec
 	streaming_main_tasks_executed += 1
 	streaming_main_last_tasks.append(task_name)
+	streaming_main_last_task_details.append({
+		"name": task_name,
+		"duration_usec": duration_usec,
+		"breakdown": breakdown,
+	})
+	streaming_main_task_total_usec += duration_usec
 	streaming_main_used_usec = Time.get_ticks_usec() - streaming_main_frame_started_usec
 
 
 func finish_streaming_main_frame() -> void:
 	streaming_main_used_usec = Time.get_ticks_usec() - streaming_main_frame_started_usec
 	streaming_main_deferred_tasks = count_deferred_streaming_main_tasks()
+	previous_streaming_frame_profile = {
+		"frame": Engine.get_process_frames(),
+		"streaming_wall_usec": streaming_main_used_usec,
+		"streaming_task_usec": streaming_main_task_total_usec,
+		"tasks": streaming_main_last_task_details.duplicate(true),
+		"generation_worker_active": has_active_background_stage(ChunkStage.GENERATE_DATA),
+		"mesh_worker_active": has_active_background_stage(ChunkStage.BUILD_MESH_DATA),
+		"active_jobs": active_jobs.size(),
+		"deferred": streaming_main_deferred_tasks,
+	}
 	if log_streaming_main_thread_frames and streaming_main_tasks_executed > 0:
 		print(
 			"Frame %d streaming main: %.3f ms | %s | deferred %d"
@@ -175,6 +204,89 @@ func finish_streaming_main_frame() -> void:
 				streaming_main_deferred_tasks,
 			]
 		)
+
+
+func has_active_background_stage(stage: int) -> bool:
+	for job in active_jobs:
+		if int(job.get("stage", -1)) == stage:
+			return true
+	return false
+
+
+func profile_previous_frame_stutter(delta: float) -> void:
+	if previous_streaming_frame_profile.is_empty() or delta <= 0.0:
+		return
+	var frame_time_ms := delta * 1000.0
+	var instantaneous_fps := 1.0 / delta
+	if instantaneous_fps >= stutter_fps_threshold:
+		return
+	var sample := previous_streaming_frame_profile.duplicate(true)
+	sample["frame_time_ms"] = frame_time_ms
+	sample["fps"] = instantaneous_fps
+	worst_stutter_frames.append(sample)
+	worst_stutter_frames.sort_custom(
+		func(a: Dictionary, b: Dictionary) -> bool:
+			return float(a["frame_time_ms"]) > float(b["frame_time_ms"])
+	)
+	if worst_stutter_frames.size() > 10:
+		worst_stutter_frames.resize(10)
+
+
+func print_stutter_sample(sample: Dictionary) -> void:
+	print(
+		"STUTTER frame %d | %.1f FPS | %.3f ms | streaming tasks %.3f ms (scheduler wall %.3f ms)"
+		% [
+			int(sample["frame"]),
+			float(sample["fps"]),
+			float(sample["frame_time_ms"]),
+			float(sample["streaming_task_usec"]) / 1000.0,
+			float(sample["streaming_wall_usec"]) / 1000.0,
+		]
+	)
+	for task in sample["tasks"]:
+		var task_data: Dictionary = task
+		print("  - %s: %.3f ms" % [task_data["name"], float(task_data["duration_usec"]) / 1000.0])
+		var breakdown: Dictionary = task_data.get("breakdown", {})
+		for label in breakdown:
+			print("      %s: %.3f ms" % [label, float(breakdown[label]) / 1000.0])
+	print(
+		"  background: generation=%s mesh=%s active=%d | deferred=%d"
+		% [
+			str(sample["generation_worker_active"]),
+			str(sample["mesh_worker_active"]),
+			int(sample["active_jobs"]),
+			int(sample["deferred"]),
+		]
+	)
+
+
+func print_stutter_top_frames() -> void:
+	print("STUTTER TOP %d" % worst_stutter_frames.size())
+	for rank in worst_stutter_frames.size():
+		var sample: Dictionary = worst_stutter_frames[rank]
+		print(
+			"  #%d frame %d | %.1f FPS | %.3f ms | streaming %.3f ms | gen=%s mesh=%s jobs=%d deferred=%d | %s"
+			% [
+				rank + 1,
+				int(sample["frame"]),
+				float(sample["fps"]),
+				float(sample["frame_time_ms"]),
+				float(sample["streaming_task_usec"]) / 1000.0,
+				str(sample["generation_worker_active"]),
+				str(sample["mesh_worker_active"]),
+				int(sample["active_jobs"]),
+				int(sample["deferred"]),
+				format_stutter_task_summary(sample["tasks"]),
+			]
+		)
+		print_stutter_sample(sample)
+
+
+func format_stutter_task_summary(tasks: Array) -> String:
+	var parts: Array[String] = []
+	for task in tasks:
+		parts.append("%s=%.2fms" % [task["name"], float(task["duration_usec"]) / 1000.0])
+	return ", ".join(parts) if not parts.is_empty() else "no streaming tasks"
 
 
 func count_deferred_streaming_main_tasks() -> int:
@@ -241,6 +353,8 @@ func update_streaming_targets() -> void:
 				"snapshot_data_copy_usec": 0,
 				"snapshot_block_borders_usec": 0,
 				"snapshot_light_borders_usec": 0,
+				"snapshot_blocklight_borders_usec": 0,
+				"snapshot_sunlight_borders_usec": 0,
 				"sunlight_vertical_worker_usec": 0,
 				"sunlight_local_bfs_worker_usec": 0,
 				"sunlight_direct_voxels": 0,
@@ -275,10 +389,16 @@ func enqueue_work(chunk_position: Vector2i) -> void:
 
 func start_background_jobs() -> void:
 	var started := 0
-	while active_jobs.size() < max_background_jobs and started < streaming_steps_per_frame:
+	while (
+		active_jobs.size() < MAX_BACKGROUND_STREAMING_JOBS
+		and started < streaming_steps_per_frame
+	):
 		if streaming_budget_reached():
 			return
-		var chunk_position := pop_work_for_stages([ChunkStage.GENERATE_DATA, ChunkStage.BUILD_MESH_DATA])
+		# Finish a generated chunk's mesh before starting another generation job.
+		var chunk_position := pop_work_for_stages([ChunkStage.BUILD_MESH_DATA])
+		if chunk_position == INVALID_CHUNK_POSITION:
+			chunk_position = pop_work_for_stages([ChunkStage.GENERATE_DATA])
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
 		var stage: int = chunk_stages[chunk_position]
@@ -292,7 +412,10 @@ func start_background_jobs() -> void:
 			worker = ChunkGenerator.new()
 			callable = Callable(worker, "generate_data").bind(parameters)
 			chunk_stages[chunk_position] = ChunkStage.GENERATING
-			record_streaming_main_task("generation_dispatch(%d,%d)" % [chunk_position.x, chunk_position.y])
+			record_streaming_main_task(
+				"generation_dispatch(%d,%d)" % [chunk_position.x, chunk_position.y],
+				dispatch_started_at
+			)
 		else:
 			var snapshot_started_at := Time.get_ticks_usec()
 			var snapshot := create_meshing_snapshot(chunk_position)
@@ -300,10 +423,14 @@ func start_background_jobs() -> void:
 			worker = ChunkMesher.new()
 			callable = Callable(worker, "build_mesh_data").bind(snapshot)
 			chunk_stages[chunk_position] = ChunkStage.MESHING
-			record_streaming_main_task("snapshot(%d,%d)" % [chunk_position.x, chunk_position.y])
+			record_streaming_main_task(
+				"snapshot(%d,%d)" % [chunk_position.x, chunk_position.y],
+				snapshot_started_at,
+				get_snapshot_task_breakdown(chunk_position)
+			)
 
 		var thread := Thread.new()
-		var error := thread.start(callable, Thread.PRIORITY_NORMAL)
+		var error := thread.start(callable, Thread.PRIORITY_LOW)
 		if error != OK:
 			chunk_stages[chunk_position] = stage
 			enqueue_work(chunk_position)
@@ -326,10 +453,15 @@ func collect_finished_jobs() -> void:
 			continue
 		if streaming_budget_reached():
 			return
+		var collect_started_at := Time.get_ticks_usec()
 		var result: Dictionary = thread.wait_to_finish()
 		active_jobs.remove_at(index)
 		var chunk_position: Vector2i = job["chunk_position"]
 		var version: int = job["version"]
+		record_streaming_main_task(
+			"collect_worker_result(%d,%d)" % [chunk_position.x, chunk_position.y],
+			collect_started_at
+		)
 		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
 			continue
 		if job["stage"] == ChunkStage.GENERATE_DATA:
@@ -343,7 +475,6 @@ func collect_finished_jobs() -> void:
 			pending_mesh_data[chunk_position] = result
 			chunk_stages[chunk_position] = ChunkStage.APPLY_MESH
 			enqueue_work(chunk_position)
-		record_streaming_main_task("collect_worker_result(%d,%d)" % [chunk_position.x, chunk_position.y])
 
 
 func process_one_pending_generation_result() -> void:
@@ -351,6 +482,7 @@ func process_one_pending_generation_result() -> void:
 		return
 	if streaming_budget_reached():
 		return
+	var process_started_at := Time.get_ticks_usec()
 	pending_generation_results.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool:
 			var a_position: Vector2i = a["chunk_position"]
@@ -370,7 +502,11 @@ func process_one_pending_generation_result() -> void:
 		if not chunk_versions.has(chunk_position) or chunk_versions[chunk_position] != version:
 			continue
 		apply_generated_data(chunk_position, pending["result"])
-		record_streaming_main_task("apply_generated_data(%d,%d)" % [chunk_position.x, chunk_position.y])
+		record_streaming_main_task(
+			"apply_generated_data(%d,%d)" % [chunk_position.x, chunk_position.y],
+			process_started_at,
+			get_apply_generated_task_breakdown(chunk_position)
+		)
 		return
 
 
@@ -384,9 +520,13 @@ func process_main_thread_queue(gameplay_only: bool) -> void:
 		)
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
+		var task_started_at := Time.get_ticks_usec()
 		if chunk_stages[chunk_position] == ChunkStage.APPLY_MESH:
 			apply_chunk_mesh(chunk_position)
-			record_streaming_main_task("apply_mesh(%d,%d)" % [chunk_position.x, chunk_position.y])
+			record_streaming_main_task(
+				"apply_mesh(%d,%d)" % [chunk_position.x, chunk_position.y],
+				task_started_at
+			)
 		else:
 			var sections: Array = pending_collision_sections.get(chunk_position, [])
 			var section := int(sections[0]) if not sections.is_empty() else -1
@@ -394,7 +534,9 @@ func process_main_thread_queue(gameplay_only: bool) -> void:
 			build_chunk_collision(chunk_position)
 			record_streaming_main_task(
 				"collision(%d,%d)[region %d,%d,%d]"
-				% [chunk_position.x, chunk_position.y, region.x, region.y, region.z]
+				% [chunk_position.x, chunk_position.y, region.x, region.y, region.z],
+				task_started_at,
+				{"greedy collision apply": Time.get_ticks_usec() - task_started_at}
 			)
 		steps += 1
 
@@ -533,38 +675,55 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 	var data_copy_started_at := Time.get_ticks_usec()
 	var data_snapshot := chunk.data.duplicate_data()
 	var data_copy_elapsed := Time.get_ticks_usec() - data_copy_started_at
-	var block_borders_started_at := Time.get_ticks_usec()
+	var block_allocation_started_at := Time.get_ticks_usec()
 	var negative_x := create_empty_boundary()
 	var positive_x := create_empty_boundary()
 	var negative_z := create_empty_boundary()
 	var positive_z := create_empty_boundary()
+	var block_allocation_elapsed := Time.get_ticks_usec() - block_allocation_started_at
+	var blocklight_allocation_started_at := Time.get_ticks_usec()
 	var negative_x_light := create_empty_light_boundary()
 	var positive_x_light := create_empty_light_boundary()
 	var negative_z_light := create_empty_light_boundary()
 	var positive_z_light := create_empty_light_boundary()
+	var blocklight_allocation_elapsed := Time.get_ticks_usec() - blocklight_allocation_started_at
+	var sunlight_allocation_started_at := Time.get_ticks_usec()
 	var negative_x_sun := create_empty_light_boundary()
 	var positive_x_sun := create_empty_light_boundary()
 	var negative_z_sun := create_empty_light_boundary()
 	var positive_z_sun := create_empty_light_boundary()
-	copy_neighbor_x_boundary(negative_x, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_x_boundary(positive_x, chunk_position + Vector2i.RIGHT, 0)
-	copy_neighbor_z_boundary(negative_z, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_z_boundary(positive_z, chunk_position + Vector2i.DOWN, 0)
-	var block_borders_elapsed := Time.get_ticks_usec() - block_borders_started_at
-	var light_borders_started_at := Time.get_ticks_usec()
-	copy_neighbor_x_light_boundary(negative_x_light, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_x_light_boundary(positive_x_light, chunk_position + Vector2i.RIGHT, 0)
-	copy_neighbor_z_light_boundary(negative_z_light, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_z_light_boundary(positive_z_light, chunk_position + Vector2i.DOWN, 0)
-	copy_neighbor_x_sun_boundary(negative_x_sun, chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_x_sun_boundary(positive_x_sun, chunk_position + Vector2i.RIGHT, 0)
-	copy_neighbor_z_sun_boundary(negative_z_sun, chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1)
-	copy_neighbor_z_sun_boundary(positive_z_sun, chunk_position + Vector2i.DOWN, 0)
-	var light_borders_elapsed := Time.get_ticks_usec() - light_borders_started_at
+	var sunlight_allocation_elapsed := Time.get_ticks_usec() - sunlight_allocation_started_at
+	var combined_copy_started_at := Time.get_ticks_usec()
+	copy_neighbor_x_snapshot_boundary(
+		negative_x, negative_x_light, negative_x_sun,
+		chunk_position + Vector2i.LEFT, ChunkData.SIZE_XZ - 1
+	)
+	copy_neighbor_x_snapshot_boundary(
+		positive_x, positive_x_light, positive_x_sun,
+		chunk_position + Vector2i.RIGHT, 0
+	)
+	copy_neighbor_z_snapshot_boundary(
+		negative_z, negative_z_light, negative_z_sun,
+		chunk_position + Vector2i.UP, ChunkData.SIZE_XZ - 1
+	)
+	copy_neighbor_z_snapshot_boundary(
+		positive_z, positive_z_light, positive_z_sun,
+		chunk_position + Vector2i.DOWN, 0
+	)
+	var combined_copy_elapsed := Time.get_ticks_usec() - combined_copy_started_at
+	# The combined loop performs one fixed-cost assignment for each channel. Keep
+	# the existing per-channel breakdown as an equal attribution of copy time.
+	var copy_share := combined_copy_elapsed / 3
+	var block_borders_elapsed := block_allocation_elapsed + copy_share
+	var blocklight_borders_elapsed := blocklight_allocation_elapsed + copy_share
+	var sunlight_borders_elapsed := sunlight_allocation_elapsed + combined_copy_elapsed - copy_share * 2
+	var light_borders_elapsed := blocklight_borders_elapsed + sunlight_borders_elapsed
 	if chunk_timings.has(chunk_position):
 		chunk_timings[chunk_position]["snapshot_data_copy_usec"] = data_copy_elapsed
 		chunk_timings[chunk_position]["snapshot_block_borders_usec"] = block_borders_elapsed
 		chunk_timings[chunk_position]["snapshot_light_borders_usec"] = light_borders_elapsed
+		chunk_timings[chunk_position]["snapshot_blocklight_borders_usec"] = blocklight_borders_elapsed
+		chunk_timings[chunk_position]["snapshot_sunlight_borders_usec"] = sunlight_borders_elapsed
 		chunk_timings[chunk_position]["snapshot_frame"] = Engine.get_process_frames()
 	return {
 		"data": data_snapshot,
@@ -581,6 +740,30 @@ func create_meshing_snapshot(chunk_position: Vector2i) -> Dictionary:
 		"negative_z_sun": negative_z_sun,
 		"positive_z_sun": positive_z_sun,
 		"collision_unit_indices": get_snapshot_collision_unit_indices(chunk_position),
+	}
+
+
+func get_snapshot_task_breakdown(chunk_position: Vector2i) -> Dictionary:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	return {
+		"duplicate ChunkData": int(timing.get("snapshot_data_copy_usec", 0)),
+		"block borders": int(timing.get("snapshot_block_borders_usec", 0)),
+		"BlockLight borders": int(timing.get("snapshot_blocklight_borders_usec", 0)),
+		"SunLight borders": int(timing.get("snapshot_sunlight_borders_usec", 0)),
+	}
+
+
+func get_apply_generated_task_breakdown(chunk_position: Vector2i) -> Dictionary:
+	var timing: Dictionary = chunk_timings.get(chunk_position, {})
+	return {
+		"apply ChunkData/setup": int(timing.get("apply_data_main_usec", 0)),
+		"SpecialBlocks sync": int(timing.get("special_blocks_main_usec", 0)),
+		"SunLight reconcile": int(timing.get("sunlight_reconcile_usec", 0)),
+		"SunLight propagation": int(timing.get("sunlight_bfs_usec", 0)),
+		"BlockLight clear": int(timing.get("blocklight_clear_usec", 0)),
+		"BlockLight source scan": int(timing.get("blocklight_source_scan_usec", 0)),
+		"BlockLight reconcile": int(timing.get("blocklight_border_reconcile_usec", 0)),
+		"BlockLight propagation": int(timing.get("blocklight_bfs_usec", 0)),
 	}
 
 
@@ -619,58 +802,55 @@ func create_empty_light_boundary() -> PackedByteArray:
 	return boundary
 
 
-func copy_neighbor_x_boundary(target: PackedInt32Array, neighbor_position: Vector2i, source_x: int) -> void:
+func copy_neighbor_x_snapshot_boundary(
+	block_target: PackedInt32Array,
+	blocklight_target: PackedByteArray,
+	sunlight_target: PackedByteArray,
+	neighbor_position: Vector2i,
+	source_x: int
+) -> void:
 	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
 	if neighbor == null:
 		return
+	var neighbor_data := neighbor.data
+	var source_blocks: Array = neighbor_data.blocks[source_x]
+	var block_light: PackedByteArray = neighbor_data.block_light
+	var sun_light: PackedByteArray = neighbor_data.sun_light
 	for y in ChunkData.HEIGHT:
+		var target_row := y * ChunkData.SIZE_XZ
+		var source_row := target_row * ChunkData.SIZE_XZ + source_x
+		var source_y: Array = source_blocks[y]
 		for z in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_block(Vector3i(source_x, y, z))
+			var target_index := target_row + z
+			var source_index := source_row + z * ChunkData.SIZE_XZ
+			block_target[target_index] = source_y[z]
+			blocklight_target[target_index] = block_light[source_index]
+			sunlight_target[target_index] = sun_light[source_index]
 
 
-func copy_neighbor_z_boundary(target: PackedInt32Array, neighbor_position: Vector2i, source_z: int) -> void:
+func copy_neighbor_z_snapshot_boundary(
+	block_target: PackedInt32Array,
+	blocklight_target: PackedByteArray,
+	sunlight_target: PackedByteArray,
+	neighbor_position: Vector2i,
+	source_z: int
+) -> void:
 	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
 	if neighbor == null:
 		return
+	var neighbor_data := neighbor.data
+	var blocks: Array = neighbor_data.blocks
+	var block_light: PackedByteArray = neighbor_data.block_light
+	var sun_light: PackedByteArray = neighbor_data.sun_light
 	for y in ChunkData.HEIGHT:
+		var target_row := y * ChunkData.SIZE_XZ
+		var source_row := (y * ChunkData.SIZE_XZ + source_z) * ChunkData.SIZE_XZ
 		for x in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block(Vector3i(x, y, source_z))
-
-
-func copy_neighbor_x_light_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_x: int) -> void:
-	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
-	if neighbor == null:
-		return
-	for y in ChunkData.HEIGHT:
-		for z in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_block_light(Vector3i(source_x, y, z))
-
-
-func copy_neighbor_z_light_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_z: int) -> void:
-	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
-	if neighbor == null:
-		return
-	for y in ChunkData.HEIGHT:
-		for x in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_block_light(Vector3i(x, y, source_z))
-
-
-func copy_neighbor_x_sun_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_x: int) -> void:
-	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
-	if neighbor == null:
-		return
-	for y in ChunkData.HEIGHT:
-		for z in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + z] = neighbor.data.get_sun_light(Vector3i(source_x, y, z))
-
-
-func copy_neighbor_z_sun_boundary(target: PackedByteArray, neighbor_position: Vector2i, source_z: int) -> void:
-	var neighbor := loaded_chunks.get(neighbor_position) as Chunk
-	if neighbor == null:
-		return
-	for y in ChunkData.HEIGHT:
-		for x in ChunkData.SIZE_XZ:
-			target[y * ChunkData.SIZE_XZ + x] = neighbor.data.get_sun_light(Vector3i(x, y, source_z))
+			var target_index := target_row + x
+			var source_index := source_row + x
+			block_target[target_index] = blocks[x][y][source_z]
+			blocklight_target[target_index] = block_light[source_index]
+			sunlight_target[target_index] = sun_light[source_index]
 
 
 func apply_chunk_mesh(chunk_position: Vector2i) -> void:
