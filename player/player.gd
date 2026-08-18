@@ -17,9 +17,11 @@ extends CharacterBody3D
 @onready var world: World = get_tree().get_first_node_in_group("world")
 @onready var inventory: Inventory = $Inventory
 @onready var mining_cracks: MeshInstance3D = $MiningCracks
+@onready var trapped_overlay: ColorRect = $TrappedOverlay/BlackOverlay
 
 var gravity: float = 20.0
 var is_flying: bool = false
+var is_trapped_in_blocks: bool = false
 var mining_controller: MiningController
 var block_placement_controller: BlockPlacementController
 var station_detector: StationDetector
@@ -30,6 +32,7 @@ var targeting_controller: BlockTargetingController
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	block_highlight.visible = false
+	trapped_overlay.visible = false
 	setup_components()
 
 func setup_components() -> void:
@@ -74,10 +77,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _physics_process(delta: float) -> void:
+	update_noclip_state()
 	targeting_controller.update_target()
 	mining_controller.process(delta)
 	block_placement_controller.process(delta)
 	station_detector.process(delta)
+	if is_trapped_in_blocks:
+		velocity = Vector3.ZERO
+		update_block_highlight()
+		return
 	if interaction_state.is_inventory_open():
 		velocity.x = 0.0
 		velocity.z = 0.0
@@ -125,6 +133,9 @@ func _physics_process(delta: float) -> void:
 	update_block_highlight()
 
 func update_block_highlight() -> void:
+	if is_camera_inside_solid():
+		block_highlight.visible = false
+		return
 	var target := targeting_controller.current_target
 	if not target.is_valid:
 		block_highlight.visible = false
@@ -135,7 +146,96 @@ func update_block_highlight() -> void:
 func set_flying(enabled: bool) -> void:
 	is_flying = enabled
 	velocity = Vector3.ZERO
-	collision_shape.set_deferred("disabled", enabled)
+	if enabled:
+		is_trapped_in_blocks = false
+		collision_shape.set_deferred("disabled", true)
+	else:
+		is_trapped_in_blocks = not is_body_space_free()
+		collision_shape.set_deferred("disabled", is_trapped_in_blocks)
+	update_trapped_overlay()
+
+func update_noclip_state() -> void:
+	if is_trapped_in_blocks and is_body_space_free() and is_physics_body_space_free():
+		velocity = Vector3.ZERO
+		if collision_shape.disabled:
+			collision_shape.set_deferred("disabled", false)
+		else:
+			is_trapped_in_blocks = false
+	update_trapped_overlay()
+
+func update_trapped_overlay() -> void:
+	trapped_overlay.visible = not is_flying and is_camera_inside_solid()
+
+func is_camera_inside_solid() -> bool:
+	if world == null:
+		return false
+	return BlockRegistry.is_mesh_block(
+		world.get_block_at_world_position(get_camera_block_position())
+	)
+
+func get_camera_block_position() -> Vector3i:
+	return Vector3i(
+		floori(camera.global_position.x),
+		floori(camera.global_position.y),
+		floori(camera.global_position.z)
+	)
+
+func is_body_space_free() -> bool:
+	if world == null or not collision_shape.shape is CapsuleShape3D:
+		return true
+	var capsule := collision_shape.shape as CapsuleShape3D
+	var shape_transform := collision_shape.global_transform
+	var radius := capsule.radius * maxf(
+		shape_transform.basis.x.length(), shape_transform.basis.z.length()
+	)
+	var half_segment := maxf(capsule.height * 0.5 - capsule.radius, 0.0)
+	half_segment *= shape_transform.basis.y.length()
+	var center := shape_transform.origin
+	var segment_bottom := center.y - half_segment
+	var segment_top := center.y + half_segment
+	var bounds_min := Vector3(center.x - radius, segment_bottom - radius, center.z - radius)
+	var bounds_max := Vector3(center.x + radius, segment_top + radius, center.z + radius)
+	for x in range(floori(bounds_min.x), floori(bounds_max.x) + 1):
+		for y in range(floori(bounds_min.y), floori(bounds_max.y) + 1):
+			for z in range(floori(bounds_min.z), floori(bounds_max.z) + 1):
+				var block_position := Vector3i(x, y, z)
+				if not BlockRegistry.is_mesh_block(
+					world.get_block_at_world_position(block_position)
+				):
+					continue
+				if capsule_overlaps_block(
+					center, segment_bottom, segment_top, radius, block_position
+				):
+					return false
+	return true
+
+func is_physics_body_space_free() -> bool:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = collision_shape.shape
+	query.transform = collision_shape.global_transform
+	query.collision_mask = 1
+	query.collide_with_areas = false
+	query.collide_with_bodies = true
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
+
+func capsule_overlaps_block(
+	center: Vector3,
+	segment_bottom: float,
+	segment_top: float,
+	radius: float,
+	block_position: Vector3i
+) -> bool:
+	var block_min := Vector3(block_position)
+	var block_max := block_min + Vector3.ONE
+	var closest_segment_y := clampf(center.y, segment_bottom, segment_top)
+	var closest_block_y := clampf(closest_segment_y, block_min.y, block_max.y)
+	closest_segment_y = clampf(closest_block_y, segment_bottom, segment_top)
+	var delta := Vector3(
+		center.x - clampf(center.x, block_min.x, block_max.x),
+		closest_segment_y - clampf(closest_segment_y, block_min.y, block_max.y),
+		center.z - clampf(center.z, block_min.z, block_max.z)
+	)
+	return delta.length_squared() < radius * radius
 
 func collect_item(item_id: int, amount: int) -> int:
 	return inventory.add_item(item_id, amount)
