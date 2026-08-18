@@ -115,7 +115,7 @@ func create_slot(index: int) -> PanelContainer:
 
 	slot.add_theme_stylebox_override("panel", style)
 
-	var button := Button.new()
+	var button := InventoryTooltipButton.new()
 	button.custom_minimum_size = Vector2(SLOT_SIZE, SLOT_SIZE)
 	button.flat = true
 	button.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -277,17 +277,16 @@ func update_slot_tooltip(index: int) -> void:
 		return
 
 	var item_id := inventory.get_item(index)
+	var amount := inventory.get_amount(index)
 
-	if item_id == ItemRegistry.Item.NONE:
+	if amount <= 0 or item_id == ItemRegistry.Item.NONE:
 		slot_buttons[index].tooltip_text = ""
 		return
 
-	var amount := inventory.get_amount(index)
-	var item_name := ItemRegistry.get_item_name(item_id)
-
-	slot_buttons[index].tooltip_text = (
-		item_name + "\nCantidad: " + str(amount)
-	)
+	var item_name := InventoryTooltipButton.safe_item_name(item_id)
+	slot_buttons[index].tooltip_text = item_name
+	if amount > 1:
+		slot_buttons[index].tooltip_text += "\nCantidad: " + str(amount)
 
 func set_slot_hover(slot: PanelContainer, hovered: bool) -> void:
 	var style := StyleBoxFlat.new()

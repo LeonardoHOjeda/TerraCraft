@@ -30,6 +30,10 @@ chunks=""
 hotbar=""
 world=""
 
+[gui]
+
+timers/tooltip_delay_sec=0.1
+
 [input]
 
 move_forward={

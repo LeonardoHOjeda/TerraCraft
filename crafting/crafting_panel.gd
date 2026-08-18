@@ -34,7 +34,7 @@ func refresh_recipes() -> void:
 
 		var output_item: int = recipe["output_item"]
 		var output_amount: int = recipe["output_amount"]
-		var button := Button.new()
+		var button := InventoryTooltipButton.new()
 		button.custom_minimum_size = Vector2(170, 46)
 		button.icon = get_item_texture(output_item)
 		button.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -42,7 +42,7 @@ func refresh_recipes() -> void:
 		button.add_theme_constant_override("icon_max_width", 32)
 		button.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		button.text = ItemRegistry.get_item_name(output_item)
+		button.text = InventoryTooltipButton.safe_item_name(output_item)
 		if output_amount > 1:
 			button.text += "  ×" + str(output_amount)
 		button.tooltip_text = get_crafting_tooltip(recipe)
@@ -111,12 +111,12 @@ func get_crafting_tooltip(recipe: Dictionary) -> String:
 	var output_item: int = recipe["output_item"]
 	var output_amount: int = recipe["output_amount"]
 	var ingredients: Dictionary = recipe["ingredients"]
-	var text := ItemRegistry.get_item_name(output_item) + " ×" + str(output_amount)
+	var text := InventoryTooltipButton.safe_item_name(output_item) + " ×" + str(output_amount)
 	text += "\n\nRequiere:"
 
 	for item_id in ingredients:
 		var required: int = ingredients[item_id]
 		var owned: int = inventory.get_total_amount(item_id)
-		text += "\n" + ItemRegistry.get_item_name(item_id) + " " + str(owned) + "/" + str(required)
+		text += "\n" + InventoryTooltipButton.safe_item_name(item_id) + " " + str(owned) + "/" + str(required)
 
 	return text
