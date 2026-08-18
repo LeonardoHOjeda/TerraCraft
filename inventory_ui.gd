@@ -199,6 +199,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func toggle_inventory() -> void:
+	if visible:
+		var cursor_returned := inventory_interaction.return_cursor_to_inventory()
+		update_cursor_visual()
+		if not cursor_returned:
+			return
+
 	visible = !visible
 
 	if interaction_state:
