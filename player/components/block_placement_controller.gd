@@ -56,9 +56,51 @@ func place_block() -> void:
 		hotbar_controller.consume_selected_item(1)
 
 func is_block_inside_player(block_position: Vector3i) -> bool:
+	var capsule := player.collision_shape.shape as CapsuleShape3D
+	if capsule == null:
+		return false
+
+	var center := player.collision_shape.global_position
+	var radius := capsule.radius
+	var half_height := capsule.height * 0.5
+	var feet_y := center.y - half_height
+	var block_top := float(block_position.y + 1)
+
 	var block_min := Vector3(block_position)
 	var block_max := block_min + Vector3.ONE
-	var position := player.global_position
-	var player_min := Vector3(position.x - 0.4, position.y, position.z - 0.4)
-	var player_max := Vector3(position.x + 0.4, position.y + 1.8, position.z + 0.4)
-	return block_min.x < player_max.x and block_max.x > player_min.x and block_min.y < player_max.y and block_max.y > player_min.y and block_min.z < player_max.z and block_max.z > player_min.z
+
+	var overlaps_player_horizontally := (
+		block_min.x < center.x + radius
+		and block_max.x > center.x - radius
+		and block_min.z < center.z + radius
+		and block_max.z > center.z - radius
+	)
+
+	var is_directly_below := (
+		overlaps_player_horizontally
+		and block_top <= feet_y + 0.1
+	)
+
+	if is_directly_below:
+		return false
+
+	var player_min := Vector3(
+		center.x - radius,
+		center.y - half_height,
+		center.z - radius
+	)
+
+	var player_max := Vector3(
+		center.x + radius,
+		center.y + half_height,
+		center.z + radius
+	)
+
+	return (
+		block_min.x < player_max.x
+		and block_max.x > player_min.x
+		and block_min.y < player_max.y
+		and block_max.y > player_min.y
+		and block_min.z < player_max.z
+		and block_max.z > player_min.z
+	)

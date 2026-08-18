@@ -85,7 +85,7 @@ func update_target() -> void:
 
 
 func target_camera_block() -> bool:
-	var block_position := player.get_camera_block_position()
+	var block_position = player.get_camera_block_position()
 	var chunk := player.world.get_chunk_at_world_position(block_position)
 	if chunk == null:
 		return false
