@@ -136,6 +136,17 @@ func return_cursor_to_inventory() -> bool:
 	return false
 
 
+func remove_one_from_cursor() -> bool:
+	if cursor_item == ItemRegistry.Item.NONE or cursor_amount <= 0:
+		return false
+
+	cursor_amount -= 1
+	if cursor_amount <= 0:
+		clear_cursor()
+
+	return true
+
+
 func clear_cursor() -> void:
 	cursor_item = ItemRegistry.Item.NONE
 	cursor_amount = 0

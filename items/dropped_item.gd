@@ -26,6 +26,8 @@ var pickup_timer: float = 0.0
 
 var merge_timer: float = 0.0
 var lifetime_timer: float = 0.0
+var has_initial_velocity: bool = false
+var initial_velocity: Vector3 = Vector3.ZERO
 
 func _ready() -> void:
 	setup_texture()
@@ -237,6 +239,10 @@ func try_merge_nearby() -> void:
 			return
 
 func apply_spawn_impulse() -> void:
+	if has_initial_velocity:
+		velocity = initial_velocity
+		return
+
 	var angle := randf() * TAU
 
 	velocity.x = cos(angle) * spawn_horizontal_speed

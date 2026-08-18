@@ -10,6 +10,11 @@ extends CharacterBody3D
 @export var crafting_station_radius: int = 3
 @export var station_check_interval: float = 0.25
 @export var cracks_texture: Texture2D
+@export var voluntary_drop_distance: float = 1.75
+@export var voluntary_drop_down_offset: float = 0.25
+@export var voluntary_drop_forward_speed: float = 3.5
+@export var voluntary_drop_upward_speed: float = 0.35
+@export var manual_drop_pickup_delay: float = 1.25
 
 @onready var camera: Camera3D = $Camera3D
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
@@ -61,6 +66,16 @@ func setup_components() -> void:
 	station_detector.setup(self, world, crafting_station_radius, station_check_interval)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if (
+		event.is_action_pressed("drop_item")
+		and event is InputEventKey
+		and not event.echo
+		and can_drop_from_hotbar()
+	):
+		if drop_selected_hotbar_item():
+			get_viewport().set_input_as_handled()
+		return
+
 	if not interaction_state.is_inventory_open():
 		hotbar_controller.handle_input(event)
 
@@ -75,6 +90,69 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("ui_cancel") and not interaction_state.is_inventory_open():
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func try_drop_item(item_id: int, consume_source: Callable) -> bool:
+	if (
+		world == null
+		or item_id == ItemRegistry.Item.NONE
+		or not consume_source.is_valid()
+	):
+		return false
+
+	var forward := -camera.global_basis.z.normalized()
+	var spawn_position := (
+		camera.global_position
+		+ forward * voluntary_drop_distance
+		+ Vector3.DOWN * voluntary_drop_down_offset
+	)
+	var spawn_velocity := (
+		forward * voluntary_drop_forward_speed
+		+ Vector3.UP * voluntary_drop_upward_speed
+	)
+	var dropped_item := world.spawn_item(
+		item_id,
+		spawn_position,
+		1,
+		spawn_velocity,
+		true,
+		manual_drop_pickup_delay
+	)
+
+	if dropped_item == null:
+		return false
+
+	if not consume_source.call():
+		dropped_item.queue_free()
+		return false
+
+	return true
+
+
+func can_drop_from_hotbar() -> bool:
+	return (
+		not interaction_state.is_inventory_open()
+		and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+		and not is_trapped_in_blocks
+	)
+
+
+func drop_selected_hotbar_item() -> bool:
+	var inventory_index := hotbar_controller.get_selected_inventory_index()
+	var item_id := inventory.get_item(inventory_index)
+	if item_id == ItemRegistry.Item.NONE:
+		return false
+
+	return try_drop_item(
+		item_id,
+		_remove_hotbar_item.bind(inventory_index, item_id)
+	)
+
+
+func _remove_hotbar_item(inventory_index: int, expected_item: int) -> bool:
+	if inventory.get_item(inventory_index) != expected_item:
+		return false
+	return inventory.remove_item(inventory_index, 1)
 
 func _physics_process(delta: float) -> void:
 	update_noclip_state()

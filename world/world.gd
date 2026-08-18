@@ -2223,16 +2223,28 @@ func setup_ore_noise(noise: FastNoiseLite, noise_seed: int, frequency: float) ->
 	noise.fractal_gain = 0.5
 
 
-func spawn_item(item_id: int, position: Vector3, amount: int = 1) -> void:
-	if dropped_item_scene == null or item_id == ItemRegistry.Item.NONE:
-		return
+func spawn_item(
+	item_id: int,
+	position: Vector3,
+	amount: int = 1,
+	initial_velocity: Vector3 = Vector3.ZERO,
+	use_initial_velocity: bool = false,
+	pickup_delay_override: float = -1.0
+) -> DroppedItem:
+	if dropped_item_scene == null or item_id == ItemRegistry.Item.NONE or amount <= 0:
+		return null
 	var dropped_item := dropped_item_scene.instantiate() as DroppedItem
 	if dropped_item == null:
-		return
+		return null
 	dropped_item.item_id = item_id
 	dropped_item.amount = amount
+	dropped_item.initial_velocity = initial_velocity
+	dropped_item.has_initial_velocity = use_initial_velocity
+	if pickup_delay_override >= 0.0:
+		dropped_item.pickup_delay = pickup_delay_override
 	add_child(dropped_item)
 	dropped_item.global_position = position
+	return dropped_item
 
 
 func get_loaded_chunk_count() -> int:

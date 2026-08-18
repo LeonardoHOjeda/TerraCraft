@@ -190,6 +190,22 @@ func update_slot(index: int) -> void:
 	update_slot_tooltip(index)
 
 func _unhandled_input(event: InputEvent) -> void:
+	if (
+		visible
+		and event is InputEventMouseButton
+		and event.pressed
+		and event.button_index == MOUSE_BUTTON_RIGHT
+		and not get_global_rect().has_point(event.position)
+		and inventory_interaction.cursor_item != ItemRegistry.Item.NONE
+	):
+		player.try_drop_item(
+			inventory_interaction.cursor_item,
+			inventory_interaction.remove_one_from_cursor
+		)
+		update_cursor_visual()
+		get_viewport().set_input_as_handled()
+		return
+
 	if event.is_action_pressed("inventory"):
 		toggle_inventory()
 
