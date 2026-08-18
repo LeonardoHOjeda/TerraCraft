@@ -36,7 +36,6 @@ environment = SubResource("Environment_caves")
 player_path = NodePath("../Player")
 streaming_steps_per_frame = 4
 streaming_main_thread_budget_ms = 3.0
-log_stutter_frames = true
 log_gameplay_collision_stats = true
 
 [node name="Player" parent="." unique_id=780558422 instance=ExtResource("2_0xm2m")]

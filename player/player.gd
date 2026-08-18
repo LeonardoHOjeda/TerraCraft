@@ -58,13 +58,18 @@ func setup_components() -> void:
 	station_detector.setup(self, world, crafting_station_radius, station_check_interval)
 
 func _unhandled_input(event: InputEvent) -> void:
-	hotbar_controller.handle_input(event)
+	if not interaction_state.is_inventory_open():
+		hotbar_controller.handle_input(event)
+
 	if event is InputEventKey and event.pressed and event.keycode == KEY_F:
-		set_flying(!is_flying)
+		if not interaction_state.is_inventory_open():
+			set_flying(!is_flying)
+
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera.rotate_x(-event.relative.y * mouse_sensitivity)
 		camera.rotation.x = clamp(camera.rotation.x, deg_to_rad(-89.0), deg_to_rad(89.0))
+
 	if event.is_action_pressed("ui_cancel") and not interaction_state.is_inventory_open():
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -73,12 +78,26 @@ func _physics_process(delta: float) -> void:
 	mining_controller.process(delta)
 	block_placement_controller.process(delta)
 	station_detector.process(delta)
+	if interaction_state.is_inventory_open():
+		velocity.x = 0.0
+		velocity.z = 0.0
+
+		if is_flying:
+			velocity.y = 0.0
+		elif not is_on_floor():
+			velocity.y -= gravity * delta
+
+		move_and_slide()
+		update_block_highlight()
+		return
+
 	if is_flying:
 		var input_direction := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 		var direction := (transform.basis * Vector3(input_direction.x, 0.0, input_direction.y)).normalized()
 		velocity.x = direction.x * fly_speed
 		velocity.z = direction.z * fly_speed
 		velocity.y = 0.0
+
 		if Input.is_action_pressed("jump"):
 			velocity.y = fly_speed
 		if Input.is_action_pressed("fly_down"):
@@ -86,18 +105,22 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 		update_block_highlight()
 		return
+
 	if not is_on_floor():
 		velocity.y -= gravity * delta
 	if Input.is_action_just_pressed("jump") and is_on_floor():
 		velocity.y = jump_velocity
+
 	var input_direction := Input.get_vector("move_left", "move_right", "move_forward", "move_backward")
 	var direction := (transform.basis * Vector3(input_direction.x, 0.0, input_direction.y)).normalized()
+
 	if direction:
 		velocity.x = direction.x * speed
 		velocity.z = direction.z * speed
 	else:
 		velocity.x = move_toward(velocity.x, 0.0, speed)
 		velocity.z = move_toward(velocity.z, 0.0, speed)
+
 	move_and_slide()
 	update_block_highlight()
 
