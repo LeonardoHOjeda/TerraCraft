@@ -17,6 +17,7 @@ extends CharacterBody3D
 @export var manual_drop_pickup_delay: float = 1.25
 
 @onready var camera: Camera3D = $Camera3D
+@onready var held_item_light: OmniLight3D = $Camera3D/HeldItemLight
 @onready var collision_shape: CollisionShape3D = $CollisionShape3D
 @onready var block_highlight: MeshInstance3D = $BlockHighlight
 @onready var world: World = get_tree().get_first_node_in_group("world")
@@ -39,6 +40,8 @@ func _ready() -> void:
 	block_highlight.visible = false
 	trapped_overlay.visible = false
 	setup_components()
+	hotbar_controller.selected_item_changed.connect(update_held_item_light)
+	update_held_item_light(hotbar_controller.get_selected_item())
 
 func setup_components() -> void:
 	interaction_state = PlayerInteractionState.new()
@@ -64,6 +67,10 @@ func setup_components() -> void:
 	station_detector.name = "StationDetector"
 	add_child(station_detector)
 	station_detector.setup(self, world, crafting_station_radius, station_check_interval)
+
+
+func update_held_item_light(item_id: int) -> void:
+	held_item_light.visible = item_id == ItemRegistry.Item.TORCH
 
 func _unhandled_input(event: InputEvent) -> void:
 	if (

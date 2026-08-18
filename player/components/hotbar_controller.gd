@@ -2,13 +2,18 @@ class_name HotbarController
 extends Node
 
 signal selection_changed(index: int)
+signal selected_item_changed(item_id: int)
 
 var inventory: Inventory
 var selected_slot: int = 0
+var selected_item: int = ItemRegistry.Item.NONE
 
 
 func setup(new_inventory: Inventory) -> void:
 	inventory = new_inventory
+	if inventory != null:
+		inventory.slot_changed.connect(_on_inventory_slot_changed)
+	selected_item = get_selected_item()
 
 
 func handle_input(event: InputEvent) -> void:
@@ -34,6 +39,7 @@ func handle_input(event: InputEvent) -> void:
 func select_slot(index: int) -> void:
 	selected_slot = wrapi(index, 0, Inventory.HOTBAR_SLOT_COUNT)
 	selection_changed.emit(selected_slot)
+	_emit_selected_item_changed_if_needed()
 
 
 func get_selected_item() -> int:
@@ -54,3 +60,16 @@ func consume_selected_item(amount: int = 1) -> bool:
 
 func get_selected_inventory_index() -> int:
 	return Inventory.HOTBAR_START + selected_slot
+
+
+func _on_inventory_slot_changed(index: int) -> void:
+	if index == get_selected_inventory_index():
+		_emit_selected_item_changed_if_needed()
+
+
+func _emit_selected_item_changed_if_needed() -> void:
+	var current_item := get_selected_item()
+	if current_item == selected_item:
+		return
+	selected_item = current_item
+	selected_item_changed.emit(selected_item)
