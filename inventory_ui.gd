@@ -28,6 +28,14 @@ func _ready() -> void:
 	visible = false
 	apply_inventory_styles()
 
+	cursor_icon.top_level = true
+	cursor_icon.custom_minimum_size = Vector2(ICON_SIZE, ICON_SIZE)
+	cursor_icon.size = Vector2(ICON_SIZE, ICON_SIZE)
+	cursor_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	cursor_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	cursor_icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	cursor_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	if player:
 		inventory = player.inventory
 		interaction_state = player.interaction_state

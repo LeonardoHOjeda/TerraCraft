@@ -173,10 +173,25 @@ layout_mode = 2
 columns = 9
 
 [node name="CursorItem" type="TextureRect" parent="UI/InventoryPanel" unique_id=1854744409]
-layout_mode = 2
+layout_mode = 0
+offset_right = 32.0
+offset_bottom = 32.0
 mouse_filter = 2
+expand_mode = 1
+stretch_mode = 5
+texture_filter = 0
 
 [node name="Amount" type="Label" parent="UI/InventoryPanel/CursorItem" unique_id=907375975]
 layout_mode = 0
-offset_right = 40.0
-offset_bottom = 23.0
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 32.0
+offset_bottom = 32.0
+mouse_filter = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
+theme_override_constants/shadow_offset_x = 2
+theme_override_constants/shadow_offset_y = 2
+theme_override_font_sizes/font_size = 14
+horizontal_alignment = 2
+vertical_alignment = 2
