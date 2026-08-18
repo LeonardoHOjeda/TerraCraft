@@ -249,6 +249,13 @@ func _on_slot_gui_input(index: int, event: InputEvent) -> void:
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		inventory_interaction.handle_right_click(index)
 
+	elif (
+		event.button_index == MOUSE_BUTTON_WHEEL_UP
+		or event.button_index == MOUSE_BUTTON_WHEEL_DOWN
+	):
+		if inventory_interaction.handle_wheel_transfer(index, event.button_index):
+			slot_buttons[index].accept_event()
+
 func update_cursor_visual() -> void:
 	if inventory_interaction.cursor_item == ItemRegistry.Item.NONE:
 		cursor_icon.texture = null

@@ -70,6 +70,42 @@ func handle_right_click(index: int) -> void:
 				clear_cursor()
 
 
+func handle_wheel_transfer(index: int, button_index: MouseButton) -> bool:
+	if cursor_amount > 0:
+		return false
+	if index < 0 or index >= Inventory.HOTBAR_START:
+		return false
+
+	var item_id := inventory.get_item(index)
+	if item_id == ItemRegistry.Item.NONE:
+		return false
+
+	if button_index == MOUSE_BUTTON_WHEEL_UP:
+		var hotbar_target := inventory.find_item_stack_in_range(
+			item_id,
+			Inventory.HOTBAR_START,
+			Inventory.TOTAL_SLOT_COUNT,
+			true
+		)
+		if hotbar_target < 0:
+			return false
+		return inventory.transfer_between_slots(index, hotbar_target, 1) == 1
+
+	if button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		if inventory.get_amount(index) >= ItemRegistry.get_max_stack(item_id):
+			return false
+		var hotbar_source := inventory.find_item_stack_in_range(
+			item_id,
+			Inventory.HOTBAR_START,
+			Inventory.TOTAL_SLOT_COUNT
+		)
+		if hotbar_source < 0:
+			return false
+		return inventory.transfer_between_slots(hotbar_source, index, 1) == 1
+
+	return false
+
+
 func handle_shift_click(index: int) -> void:
 	if cursor_item != ItemRegistry.Item.NONE:
 		return

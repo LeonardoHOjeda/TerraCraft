@@ -178,6 +178,60 @@ func add_to_slot(index: int, item_id: int, amount: int) -> int:
 
 	return amount - to_add
 
+
+func find_item_stack_in_range(
+	item_id: int,
+	start_index: int,
+	end_index: int,
+	require_space: bool = false
+) -> int:
+	if item_id == ItemRegistry.Item.NONE:
+		return -1
+
+	var safe_start := maxi(start_index, 0)
+	var safe_end := mini(end_index, TOTAL_SLOT_COUNT)
+	var max_stack := ItemRegistry.get_max_stack(item_id)
+
+	for i in range(safe_start, safe_end):
+		if items[i] != item_id or amounts[i] <= 0:
+			continue
+		if require_space and amounts[i] >= max_stack:
+			continue
+		return i
+
+	return -1
+
+
+func transfer_between_slots(source_index: int, target_index: int, amount: int = 1) -> int:
+	if (
+		source_index < 0
+		or source_index >= TOTAL_SLOT_COUNT
+		or target_index < 0
+		or target_index >= TOTAL_SLOT_COUNT
+		or source_index == target_index
+		or amount <= 0
+	):
+		return 0
+
+	var item_id := items[source_index]
+	if item_id == ItemRegistry.Item.NONE or amounts[source_index] <= 0:
+		return 0
+	if items[target_index] != ItemRegistry.Item.NONE and items[target_index] != item_id:
+		return 0
+
+	var requested: int = min(amount, amounts[source_index])
+	var remaining := add_to_slot(target_index, item_id, requested)
+	var moved := requested - remaining
+	if moved <= 0:
+		return 0
+
+	if not remove_item(source_index, moved):
+		remove_item(target_index, moved)
+		return 0
+
+	return moved
+
+
 func move_stack_to_range(source_index: int, target_start: int, target_end: int) -> void:
 	var item_id := get_item(source_index)
 	var remaining := get_amount(source_index)
