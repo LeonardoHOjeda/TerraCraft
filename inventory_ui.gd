@@ -185,18 +185,7 @@ func update_slot(index: int) -> void:
 		update_slot_tooltip(index)
 		return
 
-	var texture_position := ItemRegistry.get_texture_position(item_id)
-
-	var atlas_texture := AtlasTexture.new()
-	atlas_texture.atlas = atlas
-	atlas_texture.region = Rect2(
-		texture_position.x * 16,
-		texture_position.y * 16,
-		16,
-		16
-	)
-
-	slot_icons[index].texture = atlas_texture
+	slot_icons[index].texture = ItemIconFactory.get_item_icon(atlas, item_id)
 	amount_labels[index].text = str(amount) if amount > 1 else ""
 	update_slot_tooltip(index)
 
@@ -244,20 +233,9 @@ func update_cursor_visual() -> void:
 		cursor_label.text = ""
 		return
 
-	var texture_position := ItemRegistry.get_texture_position(
-		inventory_interaction.cursor_item
+	cursor_icon.texture = ItemIconFactory.get_item_icon(
+		atlas, inventory_interaction.cursor_item
 	)
-
-	var atlas_texture := AtlasTexture.new()
-	atlas_texture.atlas = atlas
-	atlas_texture.region = Rect2(
-		texture_position.x * 16,
-		texture_position.y * 16,
-		16,
-		16
-	)
-
-	cursor_icon.texture = atlas_texture
 
 	cursor_label.text = (
 		str(inventory_interaction.cursor_amount)

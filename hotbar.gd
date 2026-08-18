@@ -112,20 +112,7 @@ func update_slot(hotbar_index: int) -> void:
 		amount_labels[hotbar_index].text = ""
 		return
 
-	var texture_position := (
-		ItemRegistry.get_texture_position(item_id)
-	)
-
-	var atlas_texture := AtlasTexture.new()
-	atlas_texture.atlas = atlas
-	atlas_texture.region = Rect2(
-		texture_position.x * 16,
-		texture_position.y * 16,
-		16,
-		16
-	)
-
-	icons[hotbar_index].texture = atlas_texture
+	icons[hotbar_index].texture = ItemIconFactory.get_item_icon(atlas, item_id)
 
 	if amount > 1:
 		amount_labels[hotbar_index].text = str(amount)

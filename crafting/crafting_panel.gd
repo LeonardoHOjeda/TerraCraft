@@ -37,6 +37,7 @@ func refresh_recipes() -> void:
 		var button := Button.new()
 		button.custom_minimum_size = Vector2(170, 46)
 		button.icon = get_item_texture(output_item)
+		button.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 		button.expand_icon = true
 		button.add_theme_constant_override("icon_max_width", 32)
 		button.icon_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -94,11 +95,7 @@ func _on_inventory_changed(_index: int) -> void:
 
 
 func get_item_texture(item_id: int) -> Texture2D:
-	var texture_position := ItemRegistry.get_texture_position(item_id)
-	var atlas_texture := AtlasTexture.new()
-	atlas_texture.atlas = atlas
-	atlas_texture.region = Rect2(texture_position.x * 16, texture_position.y * 16, 16, 16)
-	return atlas_texture
+	return ItemIconFactory.get_item_icon(atlas, item_id)
 
 
 func craft_max(recipe_index: int) -> void:

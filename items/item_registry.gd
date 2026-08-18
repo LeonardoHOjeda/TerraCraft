@@ -153,7 +153,6 @@ static func get_texture_position(item: int) -> Vector2i:
 	return BlockRegistry.TEXTURE_DIRT
 
 static func get_placeable_block(item_id: int) -> int:
-	print("Item ID: " + str(item_id))
 	match item_id:
 		Item.DIRT:
 			return BlockRegistry.Block.DIRT
@@ -180,6 +179,10 @@ static func get_placeable_block(item_id: int) -> int:
 			return BlockRegistry.Block.TORCH
 
 	return BlockRegistry.Block.AIR
+
+static func is_block_item(item_id: int) -> bool:
+	var block_id := get_placeable_block(item_id)
+	return block_id != BlockRegistry.Block.AIR and BlockRegistry.is_mesh_block(block_id)
 
 static func get_max_stack(item_id: int) -> int:
 	match item_id:
