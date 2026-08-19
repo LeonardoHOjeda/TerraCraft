@@ -362,18 +362,18 @@ func create_special_block(local_position: Vector3i) -> void:
 	particles.draw_pass_1 = particle_quad
 	torch.add_child(particles)
 
-	var body := StaticBody3D.new()
-	body.set_meta("chunk", self)
-	body.set_meta("special_local_position", local_position)
-	body.set_meta("special_block", BlockRegistry.Block.TORCH)
+	var interaction_area := Area3D.new()
+	interaction_area.set_meta("chunk", self)
+	interaction_area.set_meta("special_local_position", local_position)
+	interaction_area.set_meta("special_block", BlockRegistry.Block.TORCH)
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(0.18, 0.72, 0.18)
 	collision.shape = shape
 	collision.position = base_position + shaft_direction * 0.36
 	collision.quaternion = shaft_rotation
-	body.add_child(collision)
-	torch.add_child(body)
+	interaction_area.add_child(collision)
+	torch.add_child(interaction_area)
 	special_block_nodes[local_position] = torch
 
 

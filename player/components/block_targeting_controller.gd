@@ -32,7 +32,7 @@ func update_target() -> void:
 	var from := camera.global_position
 	var to := from + -camera.global_transform.basis.z * interaction_distance
 	var query := PhysicsRayQueryParameters3D.create(from, to)
-	query.collide_with_areas = false
+	query.collide_with_areas = true
 	query.collide_with_bodies = true
 	query.collision_mask = 1
 	var result := player.get_world_3d().direct_space_state.intersect_ray(query)

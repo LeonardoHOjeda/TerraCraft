@@ -135,7 +135,7 @@ func build_greedy_collision_units(
 			for z in ChunkData.SIZE_XZ:
 				for x in ChunkData.SIZE_XZ:
 					var visited_index := get_collision_unit_voxel_index(x, y - y_min, z)
-					if not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+					if not BlockRegistry.is_collision_block(data.blocks[x][y][z]):
 						continue
 					solid_voxels += 1
 					if visited[visited_index] != 0:
@@ -143,7 +143,7 @@ func build_greedy_collision_units(
 					var end_x := x + 1
 					while end_x < ChunkData.SIZE_XZ:
 						var candidate_index := get_collision_unit_voxel_index(end_x, y - y_min, z)
-						if visited[candidate_index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[end_x][y][z]):
+						if visited[candidate_index] != 0 or not BlockRegistry.is_collision_block(data.blocks[end_x][y][z]):
 							break
 						end_x += 1
 					var end_z := z + 1
@@ -188,7 +188,7 @@ func is_collision_strip_available(
 ) -> bool:
 	for x in range(start_x, end_x):
 		var index := get_collision_unit_voxel_index(x, y - y_min, z)
-		if visited[index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+		if visited[index] != 0 or not BlockRegistry.is_collision_block(data.blocks[x][y][z]):
 			return false
 	return true
 
@@ -206,7 +206,7 @@ func is_collision_layer_available(
 	for z in range(start_z, end_z):
 		for x in range(start_x, end_x):
 			var index := get_collision_unit_voxel_index(x, y - y_min, z)
-			if visited[index] != 0 or not BlockRegistry.is_mesh_block(data.blocks[x][y][z]):
+			if visited[index] != 0 or not BlockRegistry.is_collision_block(data.blocks[x][y][z]):
 				return false
 	return true
 

@@ -63,6 +63,10 @@ static func is_mesh_block(block: int) -> bool:
 	return block != Block.AIR and not is_special_block(block)
 
 
+static func is_collision_block(block: int) -> bool:
+	return is_mesh_block(block)
+
+
 static func is_occluding_block(block: int) -> bool:
 	return is_mesh_block(block)
 
