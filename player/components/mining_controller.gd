@@ -7,25 +7,33 @@ var interaction_state: PlayerInteractionState
 var targeting_controller: BlockTargetingController
 var mining_cracks: MeshInstance3D
 var cracks_texture: Texture2D
+var mining_feedback: Label
 var mining_progress := 0.0
 var mining_block_position: Vector3i
 var is_mining := false
+var invalid_attempt_position := Vector3i.ZERO
+var invalid_attempt_active := false
+var feedback_time_left := 0.0
 
-func setup(new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, new_targeting_controller: BlockTargetingController, cracks: MeshInstance3D, texture: Texture2D) -> void:
+func setup(new_world: World, new_hotbar_controller: HotbarController, new_interaction_state: PlayerInteractionState, new_targeting_controller: BlockTargetingController, cracks: MeshInstance3D, texture: Texture2D, feedback: Label) -> void:
 	world = new_world
 	hotbar_controller = new_hotbar_controller
 	interaction_state = new_interaction_state
 	targeting_controller = new_targeting_controller
 	mining_cracks = cracks
 	cracks_texture = texture
+	mining_feedback = feedback
 	mining_cracks.visible = false
+	mining_feedback.visible = false
 	build_mining_cracks_mesh()
 
 func process(delta: float) -> void:
+	update_feedback(delta)
 	if interaction_state.can_interact_with_blocks() and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		process_mining(delta)
 	else:
 		reset_mining()
+		invalid_attempt_active = false
 
 func process_mining(delta: float) -> void:
 	var target := targeting_controller.current_target
@@ -34,9 +42,14 @@ func process_mining(delta: float) -> void:
 		return
 	var block_position: Vector3i = target.block_position
 	var block: int = target.chunk.get_block_local(target.local_position)
-	if block == BlockRegistry.Block.AIR or block == BlockRegistry.Block.BEDROCK or not can_mine_block(block):
+	if block == BlockRegistry.Block.AIR or block == BlockRegistry.Block.BEDROCK:
 		reset_mining()
 		return
+	if not can_mine_block(block):
+		show_insufficient_tool_feedback(block_position, block)
+		reset_mining()
+		return
+	invalid_attempt_active = false
 	if BlockRegistry.is_instant_break(block):
 		break_target_block(target)
 		reset_mining()
@@ -150,3 +163,28 @@ func can_mine_block(block: int) -> bool:
 	if ItemRegistry.get_tool_type(selected_item) != ItemRegistry.ToolType.PICKAXE:
 		return false
 	return ItemRegistry.get_mining_tier(selected_item) >= required_tier
+
+func show_insufficient_tool_feedback(block_position: Vector3i, block: int) -> void:
+	if invalid_attempt_active and invalid_attempt_position == block_position:
+		return
+	invalid_attempt_active = true
+	invalid_attempt_position = block_position
+	var required_tier := BlockRegistry.get_required_mining_tier(block)
+	match required_tier:
+		1:
+			mining_feedback.text = "Necesitas un pico de madera"
+		2:
+			mining_feedback.text = "Necesitas un pico de piedra"
+		3:
+			mining_feedback.text = "Necesitas un pico de hierro"
+		_:
+			mining_feedback.text = "Necesitas un pico de mayor nivel"
+	mining_feedback.visible = true
+	feedback_time_left = 1.5
+
+func update_feedback(delta: float) -> void:
+	if feedback_time_left <= 0.0:
+		return
+	feedback_time_left = maxf(feedback_time_left - delta, 0.0)
+	if feedback_time_left == 0.0:
+		mining_feedback.visible = false

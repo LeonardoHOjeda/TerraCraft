@@ -156,41 +156,17 @@ func get_ore_block(world_x: int, y: int, world_z: int) -> int:
 		if value > 0.58:
 			return BlockRegistry.Block.COAL
 
-	if y <= 40:
-		var value := copper_noise.get_noise_3d(world_x, y, world_z)
-
-		if value > 0.60:
-			return BlockRegistry.Block.COPPER
-
-	if y <= 35:
-		var value := tin_noise.get_noise_3d(world_x, y, world_z)
-
-		if value > 0.62:
-			return BlockRegistry.Block.TIN
-
 	if y <= 32:
 		var value := iron_noise.get_noise_3d(world_x, y, world_z)
 
 		if value > 0.64:
 			return BlockRegistry.Block.IRON
 
-	if y <= 18:
-		var value := gold_noise.get_noise_3d(world_x, y, world_z)
-
-		if value > 0.68:
-			return BlockRegistry.Block.GOLD
-
 	if y <= 14:
 		var value := tungsten_noise.get_noise_3d(world_x, y, world_z)
 
-		if value > 0.72:
+		if value > 0.70:
 			return BlockRegistry.Block.TUNGSTEN
-
-	if y <= 10:
-		var value := platinum_noise.get_noise_3d(world_x, y, world_z)
-
-		if value > 0.76:
-			return BlockRegistry.Block.PLATINUM
 
 	return BlockRegistry.Block.STONE
 

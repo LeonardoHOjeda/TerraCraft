@@ -143,13 +143,13 @@ static func get_hardness(block: int) -> float:
 			return 2.0
 
 		Block.IRON:
-			return 2.5
+			return 3.8
 
 		Block.GOLD:
 			return 2.5
 
 		Block.TUNGSTEN:
-			return 4.0
+			return 7.2
 
 		Block.PLATINUM:
 			return 4.5

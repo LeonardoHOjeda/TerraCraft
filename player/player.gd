@@ -23,6 +23,7 @@ extends CharacterBody3D
 @onready var world: World = get_tree().get_first_node_in_group("world")
 @onready var inventory: Inventory = $Inventory
 @onready var mining_cracks: MeshInstance3D = $MiningCracks
+@onready var mining_feedback: Label = $MiningFeedbackLayer/MiningFeedback
 @onready var trapped_overlay: ColorRect = $TrappedOverlay/BlackOverlay
 
 var gravity: float = 20.0
@@ -58,7 +59,7 @@ func setup_components() -> void:
 	mining_controller = MiningController.new()
 	mining_controller.name = "MiningController"
 	add_child(mining_controller)
-	mining_controller.setup(world, hotbar_controller, interaction_state, targeting_controller, mining_cracks, cracks_texture)
+	mining_controller.setup(world, hotbar_controller, interaction_state, targeting_controller, mining_cracks, cracks_texture, mining_feedback)
 	block_placement_controller = BlockPlacementController.new()
 	block_placement_controller.name = "BlockPlacementController"
 	add_child(block_placement_controller)

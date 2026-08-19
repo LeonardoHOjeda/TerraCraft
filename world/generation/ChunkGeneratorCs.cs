@@ -121,12 +121,8 @@ public partial class ChunkGeneratorCs : RefCounted
         FastNoiseLite platinum)
     {
         if (y <= 45 && coal.GetNoise3D(x, y, z) > 0.58f) return Coal;
-        if (y <= 40 && copper.GetNoise3D(x, y, z) > 0.60f) return Copper;
-        if (y <= 35 && tin.GetNoise3D(x, y, z) > 0.62f) return Tin;
         if (y <= 32 && iron.GetNoise3D(x, y, z) > 0.64f) return Iron;
-        if (y <= 18 && gold.GetNoise3D(x, y, z) > 0.68f) return Gold;
-        if (y <= 14 && tungsten.GetNoise3D(x, y, z) > 0.72f) return Tungsten;
-        if (y <= 10 && platinum.GetNoise3D(x, y, z) > 0.76f) return Platinum;
+        if (y <= 14 && tungsten.GetNoise3D(x, y, z) > 0.70f) return Tungsten;
         return Stone;
     }
 
