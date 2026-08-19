@@ -44,6 +44,7 @@ func update_debug_info() -> void:
 	)
 
 	var biome_name := get_biome_name(biome_value)
+	var streaming_metrics := world.get_streaming_metrics()
 
 	text = """
 XYZ: %.2f / %.2f / %.2f
@@ -54,6 +55,13 @@ Biome Value: %.3f
 Seed: %d
 FPS: %d
 Chunks loaded: %d
+Streaming target/visible/ready: %d / %d / %d
+Chunks with collider: %d
+Generating/meshing/collider: %d / %d / %d
+Queues work/unload (max): %d / %d (%d / %d)
+Collider queue (max): %d (%d)
+Collision shapes: %d
+Managed C# memory: %.1f MB
 Rendered faces: %d
 Last mesh: %d faces / %.2f ms worker / %.2f ms apply
 Torches: %d
@@ -82,6 +90,21 @@ Streaming tasks/deferred: %d / %d
 		world.seed,
 		Engine.get_frames_per_second(),
 		world.get_loaded_chunk_count(),
+		int(streaming_metrics.get("target_chunks", 0)),
+		int(streaming_metrics.get("visible_chunks", 0)),
+		int(streaming_metrics.get("ready_chunks", 0)),
+		int(streaming_metrics.get("chunks_with_collision", 0)),
+		int(streaming_metrics.get("generating_chunks", 0)),
+		int(streaming_metrics.get("meshing_chunks", 0)),
+		int(streaming_metrics.get("waiting_collision_chunks", 0)),
+		int(streaming_metrics.get("work_queue", 0)),
+		int(streaming_metrics.get("unload_queue", 0)),
+		int(streaming_metrics.get("max_work_queue", 0)),
+		int(streaming_metrics.get("max_unload_queue", 0)),
+		int(streaming_metrics.get("collision_queue", 0)),
+		int(streaming_metrics.get("max_collision_queue", 0)),
+		int(streaming_metrics.get("collision_shapes", 0)),
+		float(streaming_metrics.get("managed_memory", 0)) / 1048576.0,
 		world.get_total_rendered_face_count(),
 		world.mesh_last_face_count,
 		float(world.mesh_last_worker_usec) / 1000.0,

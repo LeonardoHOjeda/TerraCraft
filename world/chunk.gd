@@ -18,6 +18,7 @@ var generator := ChunkGenerator.new()
 var mesher := ChunkMesher.new()
 var collision_builder := ChunkCollisionBuilder.new()
 var collision_unit_data: Array[Dictionary] = []
+var collision_active := false
 var rendered_face_count: int = 0
 var last_special_blocks_sync_usec: int = 0
 var last_special_blocks_created: int = 0
@@ -156,10 +157,39 @@ func apply_mesh_data(mesh_data: Dictionary) -> void:
 
 func build_collision_only() -> void:
 	collision_builder.rebuild(self, self)
+	mark_collision_active()
 
 
 func build_collision_section(section: int) -> void:
 	collision_builder.rebuild_section(self, section, get_collision_unit_data(section))
+
+
+func clear_collision() -> void:
+	collision_builder.clear(self)
+	collision_active = false
+	set_special_block_collisions_enabled(false)
+
+
+func mark_collision_active() -> void:
+	collision_active = true
+	set_special_block_collisions_enabled(true)
+
+
+func set_special_block_collisions_enabled(enabled: bool) -> void:
+	for special_block in special_block_nodes.values():
+		set_special_block_node_collision_enabled(special_block as Node, enabled)
+
+
+func set_special_block_node_collision_enabled(special_block: Node, enabled: bool) -> void:
+	if special_block == null:
+		return
+	for child in special_block.get_children():
+		if child is Area3D:
+			(child as Area3D).monitoring = enabled
+			(child as Area3D).monitorable = enabled
+			for area_child in child.get_children():
+				if area_child is CollisionShape3D:
+					(area_child as CollisionShape3D).disabled = not enabled
 
 
 func get_collision_unit_data(section: int) -> Dictionary:
@@ -375,6 +405,8 @@ func create_special_block(local_position: Vector3i) -> void:
 	interaction_area.add_child(collision)
 	torch.add_child(interaction_area)
 	special_block_nodes[local_position] = torch
+	if not collision_active:
+		set_special_block_node_collision_enabled(torch, false)
 
 
 func get_torch_count() -> int:

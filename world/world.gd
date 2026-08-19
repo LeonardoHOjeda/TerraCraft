@@ -11,7 +11,9 @@ const LEAF_DISAPPEAR_MAX_MSEC := 3000
 const LEAF_AMBIGUOUS_RETRY_SECONDS := 1.0
 const MAX_LEAF_VALIDATIONS_PER_FRAME := 4
 const MAX_LEAVES_REMOVED_PER_FRAME := 4
-const MAX_BACKGROUND_STREAMING_JOBS := 1
+const MAX_BACKGROUND_STREAMING_JOBS := 2
+const MIN_DIRECTIONAL_PRIORITY_SPEED_SQUARED := 0.01
+const MAX_COLLISION_DEACTIVATIONS_PER_FRAME := 2
 const USE_CSHARP_CHUNK_MESHER := true
 const USE_CSHARP_CHUNK_GENERATOR := true
 const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
@@ -25,11 +27,14 @@ const TREE_LOG_DIRECTIONS: Array[Vector3i] = [
 
 @export var chunk_scene: PackedScene
 @export_node_path("Node3D") var player_path: NodePath
-@export_range(0, 32, 1) var load_distance: int = 3
-@export_range(1, 40, 1) var unload_distance: int = 4
+@export_range(0, 32, 1) var render_distance: int = 8
+@export_range(0, 32, 1) var collision_distance: int = 4
+@export_range(1, 40, 1) var unload_distance: int = 9
 @export_range(1, 16, 1) var streaming_steps_per_frame: int = 1
 @export_range(0, 8, 1) var max_chunk_unloads_per_frame: int = 1
 @export_range(0.5, 20.0, 0.5) var streaming_main_thread_budget_ms: float = 4.0
+# Distance squared remains dominant: a weight below 1 only breaks equal-distance ties.
+@export_range(0.0, 0.99, 0.01) var visual_directional_priority_weight: float = 0.25
 @export var log_streaming_main_thread_frames: bool = false
 @export var log_stutter_frames: bool = true
 @export_range(1.0, 240.0, 1.0) var stutter_fps_threshold: float = 55.0
@@ -92,6 +97,9 @@ var chunk_overrides: Dictionary = {}
 var special_block_metadata: Dictionary = {}
 var pending_collision_sections: Dictionary = {}
 var gameplay_collision_section_counts: Dictionary = {}
+var priority_collision_chunks: Dictionary = {}
+var pending_collision_deactivations: Array[Vector2i] = []
+var queued_collision_deactivations: Dictionary = {}
 var timing_samples_logged: int = 0
 var block_light_update_count: int = 0
 var block_light_last_update_usec: int = 0
@@ -125,6 +133,20 @@ var pending_chunk_unloads: Array[Vector2i] = []
 var queued_chunk_unloads: Dictionary = {}
 var pending_leaf_checks: Dictionary = {}
 var pending_leaf_decay: Dictionary = {}
+var streaming_metrics_sample_interval := 1.0
+var streaming_metrics_sample_elapsed := 0.0
+var streaming_max_work_queue_size := 0
+var streaming_max_unload_queue_size := 0
+var streaming_max_collision_queue_size := 0
+var streaming_metrics: Dictionary = {}
+
+
+func configure(world_seed: int) -> Error:
+	if is_inside_tree():
+		push_error("World must be configured before it enters the SceneTree.")
+		return ERR_ALREADY_IN_USE
+	seed = world_seed
+	return OK
 
 
 func _ready() -> void:
@@ -161,6 +183,7 @@ func _process(_delta: float) -> void:
 		current_player_chunk = new_player_chunk
 		update_streaming_targets()
 	process_pending_chunk_unloads()
+	process_pending_collision_deactivations()
 	process_pending_leaf_checks()
 	process_pending_leaf_decay()
 	streaming_targets_update_usec = Time.get_ticks_usec() - targets_started_at
@@ -173,6 +196,80 @@ func _process(_delta: float) -> void:
 	process_main_thread_queue(false)
 	start_background_jobs()
 	finish_streaming_main_frame()
+	update_streaming_metrics(_delta)
+
+
+func update_streaming_metrics(delta: float) -> void:
+	streaming_max_work_queue_size = maxi(streaming_max_work_queue_size, work_queue.size())
+	streaming_max_unload_queue_size = maxi(
+		streaming_max_unload_queue_size, pending_chunk_unloads.size()
+	)
+	streaming_max_collision_queue_size = maxi(
+		streaming_max_collision_queue_size, priority_collision_chunks.size()
+	)
+	streaming_metrics_sample_elapsed += delta
+	if streaming_metrics_sample_elapsed < streaming_metrics_sample_interval:
+		return
+	streaming_metrics_sample_elapsed = 0.0
+	streaming_metrics = capture_streaming_metrics()
+
+
+func capture_streaming_metrics() -> Dictionary:
+	var generating := 0
+	var meshing := 0
+	var waiting_collision := 0
+	var ready := 0
+	var visible := 0
+	var chunks_with_collision := 0
+	for stage_value in chunk_stages.values():
+		var stage := int(stage_value)
+		if stage == ChunkStage.GENERATE_DATA or stage == ChunkStage.GENERATING:
+			generating += 1
+		elif stage in [ChunkStage.BUILD_MESH_DATA, ChunkStage.MESHING, ChunkStage.APPLY_MESH]:
+			meshing += 1
+		elif stage == ChunkStage.BUILD_COLLISION:
+			waiting_collision += 1
+		elif stage == ChunkStage.READY:
+			ready += 1
+	var collision_shapes := 0
+	for chunk_value in loaded_chunks.values():
+		var chunk := chunk_value as Chunk
+		if chunk == null:
+			continue
+		if chunk.mesh != null:
+			visible += 1
+		if chunk.collision_active:
+			chunks_with_collision += 1
+		for child in chunk.get_children():
+			if child is StaticBody3D:
+				collision_shapes += child.get_child_count()
+	var managed_memory := 0
+	if not previous_gc_frame_snapshot.is_empty():
+		managed_memory = int(previous_gc_frame_snapshot.get("managed_memory", 0))
+	return {
+		"target_chunks": (render_distance * 2 + 1) * (render_distance * 2 + 1),
+		"loaded_chunks": loaded_chunks.size(),
+		"visible_chunks": visible,
+		"chunks_with_collision": chunks_with_collision,
+		"ready_chunks": ready,
+		"generating_chunks": generating,
+		"meshing_chunks": meshing,
+		"waiting_collision_chunks": waiting_collision,
+		"work_queue": work_queue.size(),
+		"max_work_queue": streaming_max_work_queue_size,
+		"unload_queue": pending_chunk_unloads.size(),
+		"max_unload_queue": streaming_max_unload_queue_size,
+		"collision_queue": priority_collision_chunks.size(),
+		"max_collision_queue": streaming_max_collision_queue_size,
+		"collision_shapes": collision_shapes,
+		"managed_memory": managed_memory,
+	}
+
+
+func get_streaming_metrics() -> Dictionary:
+	if streaming_metrics.is_empty():
+		streaming_metrics = capture_streaming_metrics()
+	return streaming_metrics
 
 
 func reset_streaming_targets_profile() -> void:
@@ -463,10 +560,11 @@ func get_chunk_position(world_position: Vector3) -> Vector2i:
 
 
 func update_streaming_targets() -> void:
-	unload_distance = maxi(unload_distance, load_distance + 1)
+	unload_distance = maxi(unload_distance, render_distance + 1)
+	collision_distance = mini(collision_distance, render_distance)
 
-	for offset_x in range(-load_distance, load_distance + 1):
-		for offset_z in range(-load_distance, load_distance + 1):
+	for offset_x in range(-render_distance, render_distance + 1):
+		for offset_z in range(-render_distance, render_distance + 1):
 			var chunk_position := current_player_chunk + Vector2i(offset_x, offset_z)
 			if chunk_stages.has(chunk_position):
 				continue
@@ -517,6 +615,7 @@ func update_streaming_targets() -> void:
 				"sunlight_changed_neighbor_chunks": 0,
 			}
 			enqueue_work(chunk_position)
+	update_collision_targets()
 
 	for chunk_position in chunk_stages:
 		if chebyshev_distance(chunk_position, current_player_chunk) > unload_distance:
@@ -526,6 +625,82 @@ func update_streaming_targets() -> void:
 		if chebyshev_distance(pending_position, current_player_chunk) <= unload_distance:
 			pending_chunk_unloads.remove_at(index)
 			queued_chunk_unloads.erase(pending_position)
+
+
+func update_collision_targets() -> void:
+	for chunk_position in loaded_chunks:
+		var chunk := loaded_chunks[chunk_position] as Chunk
+		if chunk == null:
+			continue
+		if is_chunk_within_collision_distance(chunk_position):
+			cancel_collision_deactivation(chunk_position)
+			if not chunk.collision_active and chunk_stages.get(chunk_position) == ChunkStage.READY:
+				queue_chunk_collision_activation(chunk_position)
+		else:
+			cancel_chunk_collision_activation(chunk_position)
+			if chunk.collision_active:
+				queue_collision_deactivation(chunk_position)
+
+
+func is_chunk_within_collision_distance(chunk_position: Vector2i) -> bool:
+	return chebyshev_distance(chunk_position, current_player_chunk) <= collision_distance
+
+
+func queue_chunk_collision_activation(chunk_position: Vector2i) -> void:
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk == null or chunk.collision_active or priority_collision_chunks.has(chunk_position):
+		return
+	set_all_collision_sections_pending(chunk_position)
+	priority_collision_chunks[chunk_position] = true
+	chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
+	enqueue_work(chunk_position)
+
+
+func cancel_chunk_collision_activation(chunk_position: Vector2i) -> void:
+	if not priority_collision_chunks.has(chunk_position):
+		return
+	priority_collision_chunks.erase(chunk_position)
+	pending_collision_sections.erase(chunk_position)
+	queued_work.erase(chunk_position)
+	work_queue.erase(chunk_position)
+	if chunk_stages.has(chunk_position):
+		chunk_stages[chunk_position] = ChunkStage.READY
+	var chunk := loaded_chunks.get(chunk_position) as Chunk
+	if chunk != null:
+		chunk.clear_collision()
+
+
+func queue_collision_deactivation(chunk_position: Vector2i) -> void:
+	if queued_collision_deactivations.has(chunk_position):
+		return
+	pending_collision_deactivations.append(chunk_position)
+	queued_collision_deactivations[chunk_position] = true
+
+
+func cancel_collision_deactivation(chunk_position: Vector2i) -> void:
+	if not queued_collision_deactivations.has(chunk_position):
+		return
+	queued_collision_deactivations.erase(chunk_position)
+	pending_collision_deactivations.erase(chunk_position)
+
+
+func process_pending_collision_deactivations() -> void:
+	var processed := 0
+	while (
+		processed < MAX_COLLISION_DEACTIVATIONS_PER_FRAME
+		and not pending_collision_deactivations.is_empty()
+	):
+		var chunk_position: Vector2i = pending_collision_deactivations.pop_front()
+		queued_collision_deactivations.erase(chunk_position)
+		if is_chunk_within_collision_distance(chunk_position):
+			continue
+		if chunk_stages.get(chunk_position) != ChunkStage.READY:
+			queue_collision_deactivation(chunk_position)
+			continue
+		var chunk := loaded_chunks.get(chunk_position) as Chunk
+		if chunk != null:
+			chunk.clear_collision()
+		processed += 1
 
 
 func enqueue_chunk_unload(chunk_position: Vector2i) -> void:
@@ -710,13 +885,13 @@ func process_one_pending_generation_result() -> void:
 		return
 
 
-func process_main_thread_queue(gameplay_only: bool) -> void:
+func process_main_thread_queue(priority_only: bool) -> void:
 	var steps := 0
 	while steps < streaming_steps_per_frame:
 		if streaming_budget_reached():
 			return
 		var chunk_position := pop_work_for_stages(
-			[ChunkStage.APPLY_MESH, ChunkStage.BUILD_COLLISION], gameplay_only
+			[ChunkStage.APPLY_MESH, ChunkStage.BUILD_COLLISION], priority_only
 		)
 		if chunk_position == INVALID_CHUNK_POSITION:
 			return
@@ -741,17 +916,21 @@ func process_main_thread_queue(gameplay_only: bool) -> void:
 		steps += 1
 
 
-func pop_work_for_stages(stages: Array, gameplay_only: bool = false) -> Vector2i:
+func pop_work_for_stages(stages: Array, priority_only: bool = false) -> Vector2i:
 	sort_work_queue()
 	for index in work_queue.size():
 		var chunk_position := work_queue[index]
 		if not chunk_stages.has(chunk_position):
 			queued_work.erase(chunk_position)
 			work_queue.remove_at(index)
-			return pop_work_for_stages(stages, gameplay_only)
+			return pop_work_for_stages(stages, priority_only)
 		if (
 			stages.has(chunk_stages[chunk_position])
-			and (not gameplay_only or gameplay_rebuilds.has(chunk_position))
+			and (
+				not priority_only
+				or gameplay_rebuilds.has(chunk_position)
+				or priority_collision_chunks.has(chunk_position)
+			)
 		):
 			work_queue.remove_at(index)
 			queued_work.erase(chunk_position)
@@ -760,20 +939,52 @@ func pop_work_for_stages(stages: Array, gameplay_only: bool = false) -> Vector2i
 
 
 func sort_work_queue() -> void:
+	var movement_direction := get_horizontal_movement_direction()
 	work_queue.sort_custom(
 		func(a: Vector2i, b: Vector2i) -> bool:
-			var a_is_gameplay := gameplay_rebuilds.has(a)
-			var b_is_gameplay := gameplay_rebuilds.has(b)
-			if a_is_gameplay != b_is_gameplay:
-				return a_is_gameplay
+			var a_is_priority := gameplay_rebuilds.has(a) or priority_collision_chunks.has(a)
+			var b_is_priority := gameplay_rebuilds.has(b) or priority_collision_chunks.has(b)
+			if a_is_priority != b_is_priority:
+				return a_is_priority
 			var a_distance := distance_squared(a, current_player_chunk)
 			var b_distance := distance_squared(b, current_player_chunk)
-			if a_distance == b_distance:
-				if a.x == b.x:
-					return a.y < b.y
-				return a.x < b.x
-			return a_distance < b_distance
+			if a_distance != b_distance:
+				return a_distance < b_distance
+			# Gameplay rebuilds and collider activation retain their existing ordering.
+			if not a_is_priority and movement_direction != Vector2.ZERO:
+				var a_score := get_visual_streaming_priority_score(
+					a, a_distance, movement_direction
+				)
+				var b_score := get_visual_streaming_priority_score(
+					b, b_distance, movement_direction
+				)
+				if not is_equal_approx(a_score, b_score):
+					return a_score < b_score
+			if a.x == b.x:
+				return a.y < b.y
+			return a.x < b.x
 	)
+
+
+func get_horizontal_movement_direction() -> Vector2:
+	if player == null or not (player is CharacterBody3D):
+		return Vector2.ZERO
+	var body := player as CharacterBody3D
+	var horizontal_velocity := Vector2(body.velocity.x, body.velocity.z)
+	if horizontal_velocity.length_squared() < MIN_DIRECTIONAL_PRIORITY_SPEED_SQUARED:
+		return Vector2.ZERO
+	return horizontal_velocity.normalized()
+
+
+func get_visual_streaming_priority_score(
+	chunk_position: Vector2i, squared_distance: int, movement_direction: Vector2
+) -> float:
+	var offset := chunk_position - current_player_chunk
+	var chunk_direction := Vector2(offset.x, offset.y)
+	if chunk_direction == Vector2.ZERO:
+		return float(squared_distance)
+	var forward_dot := movement_direction.dot(chunk_direction.normalized())
+	return float(squared_distance) - maxf(forward_dot, 0.0) * visual_directional_priority_weight
 
 
 func distance_squared(a: Vector2i, b: Vector2i) -> int:
@@ -1083,18 +1294,22 @@ func apply_chunk_mesh(chunk_position: Vector2i) -> void:
 	chunk_timings[chunk_position]["apply_mesh_usec"] = mesh_last_apply_usec
 	chunk_timings[chunk_position]["apply_mesh_frame"] = Engine.get_process_frames()
 	if initial_chunks.has(chunk_position):
-		set_all_collision_sections_pending(chunk_position)
-		chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
-		enqueue_work(chunk_position)
+		if is_chunk_within_collision_distance(chunk_position):
+			queue_chunk_collision_activation(chunk_position)
+		else:
+			chunk.clear_collision()
+			chunk_stages[chunk_position] = ChunkStage.READY
+			complete_initial_chunk(chunk_position)
 	elif gameplay_rebuilds.has(chunk_position):
 		gameplay_visual_rebuild_counts[chunk_position] = int(
 			gameplay_visual_rebuild_counts.get(chunk_position, 0)
 		) + 1
-		if has_pending_collision_sections(chunk_position):
+		if has_pending_collision_sections(chunk_position) and is_chunk_within_collision_distance(chunk_position):
 			chunk_stages[chunk_position] = ChunkStage.BUILD_COLLISION
 			enqueue_work(chunk_position)
 		else:
 			chunk_stages[chunk_position] = ChunkStage.READY
+			complete_gameplay_rebuild(chunk_position)
 	else:
 		# Neighbor/light-only remeshes do not change voxel ownership, so greedy
 		# terrain boxes remain valid and no physics work is needed.
@@ -1190,27 +1405,39 @@ func build_chunk_collision(chunk_position: Vector2i) -> void:
 		return
 	pending_collision_sections.erase(chunk_position)
 	chunk_stages[chunk_position] = ChunkStage.READY
+	if priority_collision_chunks.has(chunk_position):
+		priority_collision_chunks.erase(chunk_position)
+		chunk.mark_collision_active()
 
 	if initial_chunks.has(chunk_position):
-		initial_chunks.erase(chunk_position)
-		if log_chunk_load_profile:
-			print_chunk_load_profile(chunk_position)
-		if log_chunk_timings and timing_samples_logged < timing_samples_to_log:
-			print_chunk_timing(chunk_position, false)
-			timing_samples_logged += 1
-		request_cardinal_neighbor_rebuilds(chunk_position)
+		complete_initial_chunk(chunk_position)
 	elif gameplay_rebuilds.has(chunk_position) and gameplay_collision_deadlines_empty(chunk_position):
-		if log_gameplay_rebuild_timings:
-			print_gameplay_rebuild_timing(chunk_position)
-		if log_gameplay_collision_stats:
-			print_gameplay_collision_stats(chunk_position)
-		gameplay_rebuilds.erase(chunk_position)
-		gameplay_collision_deadlines.erase(chunk_position)
-		gameplay_change_counts.erase(chunk_position)
-		gameplay_visual_rebuild_counts.erase(chunk_position)
-		gameplay_collision_section_counts.erase(chunk_position)
+		complete_gameplay_rebuild(chunk_position)
 	elif log_neighbor_rebuild_timings:
 		print_chunk_timing(chunk_position, true)
+
+
+func complete_initial_chunk(chunk_position: Vector2i) -> void:
+	initial_chunks.erase(chunk_position)
+	if log_chunk_load_profile:
+		print_chunk_load_profile(chunk_position)
+	if log_chunk_timings and timing_samples_logged < timing_samples_to_log:
+		print_chunk_timing(chunk_position, false)
+		timing_samples_logged += 1
+	request_cardinal_neighbor_rebuilds(chunk_position)
+
+
+func complete_gameplay_rebuild(chunk_position: Vector2i) -> void:
+	if log_gameplay_rebuild_timings:
+		print_gameplay_rebuild_timing(chunk_position)
+	if log_gameplay_collision_stats:
+		print_gameplay_collision_stats(chunk_position)
+	gameplay_rebuilds.erase(chunk_position)
+	gameplay_collision_deadlines.erase(chunk_position)
+	gameplay_change_counts.erase(chunk_position)
+	gameplay_visual_rebuild_counts.erase(chunk_position)
+	gameplay_collision_section_counts.erase(chunk_position)
+	pending_collision_sections.erase(chunk_position)
 
 
 func gameplay_collision_deadlines_empty(chunk_position: Vector2i) -> bool:
@@ -1391,6 +1618,8 @@ func unload_chunk(chunk_position: Vector2i) -> Dictionary:
 	gameplay_visual_rebuild_counts.erase(chunk_position)
 	pending_collision_sections.erase(chunk_position)
 	gameplay_collision_section_counts.erase(chunk_position)
+	priority_collision_chunks.erase(chunk_position)
+	cancel_collision_deactivation(chunk_position)
 	cleanup_usec += Time.get_ticks_usec() - cleanup_started_at
 	var cardinal_rebuilds_started_at := Time.get_ticks_usec()
 	request_cardinal_neighbor_rebuilds(chunk_position)

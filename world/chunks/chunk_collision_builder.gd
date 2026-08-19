@@ -4,6 +4,13 @@ extends RefCounted
 const SECTION_NODE_PREFIX := "CollisionUnit_"
 
 
+func clear(chunk: Chunk) -> void:
+	for section in Chunk.COLLISION_REGION_COUNT:
+		var body := chunk.get_node_or_null(SECTION_NODE_PREFIX + str(section)) as StaticBody3D
+		if body != null:
+			body.free()
+
+
 func rebuild(mesh_instance: MeshInstance3D, chunk: Chunk) -> void:
 	for section in Chunk.COLLISION_REGION_COUNT:
 		rebuild_section(chunk, section, chunk.get_collision_unit_data(section))
