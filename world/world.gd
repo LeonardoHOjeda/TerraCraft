@@ -95,6 +95,7 @@ var gameplay_change_counts: Dictionary = {}
 var gameplay_visual_rebuild_counts: Dictionary = {}
 var chunk_overrides: Dictionary = {}
 var special_block_metadata: Dictionary = {}
+var dirty_chunks: Dictionary = {}
 var pending_collision_sections: Dictionary = {}
 var gameplay_collision_section_counts: Dictionary = {}
 var priority_collision_chunks: Dictionary = {}
@@ -141,12 +142,48 @@ var streaming_max_collision_queue_size := 0
 var streaming_metrics: Dictionary = {}
 
 
-func configure(world_seed: int) -> Error:
+func configure(
+	world_seed: int,
+	loaded_overrides: Dictionary = {},
+	loaded_special_metadata: Dictionary = {}
+) -> Error:
 	if is_inside_tree():
 		push_error("World must be configured before it enters the SceneTree.")
 		return ERR_ALREADY_IN_USE
 	seed = world_seed
+	chunk_overrides = loaded_overrides.duplicate(true)
+	special_block_metadata = loaded_special_metadata.duplicate(true)
+	dirty_chunks.clear()
 	return OK
+
+
+func get_dirty_chunk_positions() -> Array[Vector2i]:
+	var positions: Array[Vector2i] = []
+	for chunk_position in dirty_chunks:
+		positions.append(chunk_position)
+	positions.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return a.x < b.x or (a.x == b.x and a.y < b.y)
+	)
+	return positions
+
+
+func get_chunk_save_payload(chunk_position: Vector2i) -> Dictionary:
+	var blocks: Dictionary = chunk_overrides.get(chunk_position, {})
+	var special: Dictionary = special_block_metadata.get(chunk_position, {})
+	return {
+		"save_version": 1,
+		"chunk": chunk_position,
+		"blocks": blocks.duplicate(true),
+		"special": special.duplicate(true),
+	}
+
+
+func mark_chunk_saved(chunk_position: Vector2i) -> void:
+	dirty_chunks.erase(chunk_position)
+
+
+func mark_chunk_dirty(chunk_position: Vector2i) -> void:
+	dirty_chunks[chunk_position] = true
 
 
 func _ready() -> void:
@@ -2244,6 +2281,7 @@ func set_special_block_support(chunk_position: Vector2i, local_position: Vector3
 	var chunk_metadata: Dictionary = special_block_metadata.get(chunk_position, {})
 	chunk_metadata[local_position] = {"support_direction": support_direction}
 	special_block_metadata[chunk_position] = chunk_metadata
+	mark_chunk_dirty(chunk_position)
 
 
 func get_special_block_support(chunk_position: Vector2i, local_position: Vector3i) -> Vector3i:
@@ -2254,11 +2292,14 @@ func get_special_block_support(chunk_position: Vector2i, local_position: Vector3
 
 func clear_special_block_metadata(chunk_position: Vector2i, local_position: Vector3i) -> void:
 	var chunk_metadata: Dictionary = special_block_metadata.get(chunk_position, {})
+	if not chunk_metadata.has(local_position):
+		return
 	chunk_metadata.erase(local_position)
 	if chunk_metadata.is_empty():
 		special_block_metadata.erase(chunk_position)
 	else:
 		special_block_metadata[chunk_position] = chunk_metadata
+	mark_chunk_dirty(chunk_position)
 
 
 func break_torches_supported_by(support_world_position: Vector3i) -> void:
@@ -2721,3 +2762,4 @@ func record_block_override(chunk: Chunk, local_position: Vector3i) -> void:
 	var overrides: Dictionary = chunk_overrides.get(chunk.chunk_position, {})
 	overrides[local_position] = chunk.get_block_local(local_position)
 	chunk_overrides[chunk.chunk_position] = overrides
+	mark_chunk_dirty(chunk.chunk_position)

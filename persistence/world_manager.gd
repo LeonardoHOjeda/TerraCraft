@@ -11,6 +11,8 @@ const MAX_SEED := 2147483647
 
 var active_world_id := ""
 var active_world_metadata: Dictionary = {}
+var active_chunk_overrides: Dictionary = {}
+var active_special_block_metadata: Dictionary = {}
 
 
 func _ready() -> void:
@@ -93,6 +95,7 @@ func open_world(world_id: String, load_gameplay: bool = true) -> Dictionary:
 		return read_result
 
 	var metadata: Dictionary = read_result["metadata"]
+	var chunk_data_result := _load_all_chunk_data(world_id)
 	metadata["last_played_at"] = _utc_timestamp()
 	var write_error := _write_metadata_atomic(world_id, metadata)
 	if write_error != OK:
@@ -100,6 +103,8 @@ func open_world(world_id: String, load_gameplay: bool = true) -> Dictionary:
 
 	active_world_id = world_id
 	active_world_metadata = metadata.duplicate(true)
+	active_chunk_overrides = chunk_data_result["overrides"]
+	active_special_block_metadata = chunk_data_result["special"]
 	if load_gameplay:
 		var scene_error := get_tree().change_scene_to_file(GAMEPLAY_SCENE)
 		if scene_error != OK:
@@ -111,10 +116,60 @@ func open_world(world_id: String, load_gameplay: bool = true) -> Dictionary:
 func clear_active_world() -> void:
 	active_world_id = ""
 	active_world_metadata.clear()
+	active_chunk_overrides.clear()
+	active_special_block_metadata.clear()
 
 
 func get_active_world_metadata() -> Dictionary:
 	return active_world_metadata.duplicate(true)
+
+
+func get_active_world_chunk_data() -> Dictionary:
+	return {
+		"overrides": active_chunk_overrides.duplicate(true),
+		"special": active_special_block_metadata.duplicate(true),
+	}
+
+
+func save_active_world_changes(world: World) -> Dictionary:
+	if active_world_id.is_empty() or active_world_metadata.is_empty():
+		return _failure("Cannot save changes without an active world.")
+	if world == null:
+		return _failure("Cannot save changes without a World instance.")
+
+	var saved_chunks: Array[Vector2i] = []
+	var failed_chunks: Array[Dictionary] = []
+	for chunk_position in world.get_dirty_chunk_positions():
+		var payload := world.get_chunk_save_payload(chunk_position)
+		var save_error := _save_chunk_payload(active_world_id, chunk_position, payload)
+		if save_error == OK:
+			world.mark_chunk_saved(chunk_position)
+			_cache_saved_chunk_payload(chunk_position, payload)
+			saved_chunks.append(chunk_position)
+		else:
+			failed_chunks.append({"chunk": chunk_position, "error_code": save_error})
+
+	if not failed_chunks.is_empty():
+		return {
+			"ok": false,
+			"error": "One or more chunk files could not be saved.",
+			"saved_chunks": saved_chunks,
+			"failed_chunks": failed_chunks,
+		}
+	return {"ok": true, "error": "", "saved_chunks": saved_chunks, "failed_chunks": []}
+
+
+func _cache_saved_chunk_payload(chunk_position: Vector2i, payload: Dictionary) -> void:
+	var blocks: Dictionary = payload["blocks"]
+	var special: Dictionary = payload["special"]
+	if blocks.is_empty():
+		active_chunk_overrides.erase(chunk_position)
+	else:
+		active_chunk_overrides[chunk_position] = blocks.duplicate(true)
+	if special.is_empty():
+		active_special_block_metadata.erase(chunk_position)
+	else:
+		active_special_block_metadata[chunk_position] = special.duplicate(true)
 
 
 func _parse_or_generate_seed(seed_text: String) -> Dictionary:
@@ -205,6 +260,168 @@ func _validate_metadata(world_id: String, metadata: Dictionary) -> String:
 	return ""
 
 
+func _load_all_chunk_data(world_id: String) -> Dictionary:
+	var overrides: Dictionary = {}
+	var special: Dictionary = {}
+	var chunks_path := _world_directory(world_id).path_join(CHUNKS_DIRECTORY)
+	var directory := DirAccess.open(chunks_path)
+	if directory == null:
+		push_warning("Could not open chunk save directory for world '%s'." % world_id)
+		return {"overrides": overrides, "special": special}
+
+	directory.list_dir_begin()
+	var entry := directory.get_next()
+	while not entry.is_empty():
+		if not directory.current_is_dir() and entry.ends_with(".dat"):
+			var coordinate_result := _parse_chunk_filename(entry)
+			if coordinate_result["ok"]:
+				var chunk_position: Vector2i = coordinate_result["chunk"]
+				var load_result := _read_chunk_payload(chunks_path.path_join(entry), chunk_position)
+				if load_result["ok"]:
+					var payload: Dictionary = load_result["payload"]
+					if not payload["blocks"].is_empty():
+						overrides[chunk_position] = payload["blocks"]
+					if not payload["special"].is_empty():
+						special[chunk_position] = payload["special"]
+				else:
+					push_warning("Ignoring corrupt chunk save '%s': %s" % [entry, load_result["error"]])
+			else:
+				push_warning("Ignoring chunk save with invalid filename '%s'." % entry)
+		entry = directory.get_next()
+	directory.list_dir_end()
+	return {"overrides": overrides, "special": special}
+
+
+func _read_chunk_payload(path: String, expected_chunk: Vector2i) -> Dictionary:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return _failure("Could not open file.", FileAccess.get_open_error())
+	var payload: Variant = file.get_var(false)
+	var read_error := file.get_error()
+	file.close()
+	if read_error != OK and read_error != ERR_FILE_EOF:
+		return _failure("Could not read Variant payload.", read_error)
+	if not payload is Dictionary:
+		return _failure("Payload is not a Dictionary.")
+	var validation_error := _validate_chunk_payload(payload, expected_chunk)
+	if not validation_error.is_empty():
+		return _failure(validation_error)
+	return {"ok": true, "error": "", "payload": payload}
+
+
+func _validate_chunk_payload(payload: Dictionary, expected_chunk: Vector2i) -> String:
+	for key in ["save_version", "chunk", "blocks", "special"]:
+		if not payload.has(key):
+			return "Payload is missing '%s'." % key
+	if not payload["save_version"] is int or payload["save_version"] != SAVE_VERSION:
+		return "Unsupported or invalid save version."
+	if not payload["chunk"] is Vector2i or payload["chunk"] != expected_chunk:
+		return "Chunk coordinate does not match its filename."
+	if not payload["blocks"] is Dictionary or not payload["special"] is Dictionary:
+		return "Blocks and special metadata must be Dictionaries."
+
+	var blocks: Dictionary = payload["blocks"]
+	for local_position in blocks:
+		if not _is_valid_local_position(local_position):
+			return "Invalid local block position."
+		if not blocks[local_position] is int:
+			return "Block id is not an integer."
+		var block_id: int = blocks[local_position]
+		if block_id < BlockRegistry.Block.AIR or block_id >= BlockRegistry.Block.size():
+			return "Block id is outside the registry range."
+
+	var allowed_support_directions: Array[Vector3i] = [
+		Vector3i.DOWN, Vector3i.LEFT, Vector3i.RIGHT, Vector3i.FORWARD, Vector3i.BACK
+	]
+	var special: Dictionary = payload["special"]
+	for local_position in special:
+		if not _is_valid_local_position(local_position):
+			return "Invalid special block position."
+		if not special[local_position] is Dictionary:
+			return "Special block metadata is not a Dictionary."
+		var metadata: Dictionary = special[local_position]
+		if (
+			not metadata.has("support_direction")
+			or not metadata["support_direction"] is Vector3i
+			or not allowed_support_directions.has(metadata["support_direction"])
+		):
+			return "Invalid special block support direction."
+		if blocks.get(local_position, BlockRegistry.Block.AIR) != BlockRegistry.Block.TORCH:
+			return "Special metadata does not reference a saved torch override."
+	return ""
+
+
+func _is_valid_local_position(value: Variant) -> bool:
+	if not value is Vector3i:
+		return false
+	return (
+		value.x >= 0 and value.x < ChunkData.SIZE_XZ
+		and value.y >= 0 and value.y < ChunkData.HEIGHT
+		and value.z >= 0 and value.z < ChunkData.SIZE_XZ
+	)
+
+
+func _parse_chunk_filename(filename: String) -> Dictionary:
+	var components := filename.get_basename().split("_", false)
+	if components.size() != 2 or not components[0].is_valid_int() or not components[1].is_valid_int():
+		return _failure("Invalid chunk filename.")
+	return {
+		"ok": true,
+		"error": "",
+		"chunk": Vector2i(components[0].to_int(), components[1].to_int()),
+	}
+
+
+func _save_chunk_payload(
+	world_id: String, chunk_position: Vector2i, payload: Dictionary
+) -> Error:
+	var path := _chunk_path(world_id, chunk_position)
+	if payload["blocks"].is_empty() and payload["special"].is_empty():
+		if FileAccess.file_exists(path):
+			return DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		return OK
+	return _write_chunk_payload_atomic(path, payload.duplicate(true))
+
+
+func _write_chunk_payload_atomic(path: String, payload: Dictionary) -> Error:
+	var temporary_path := path + ".tmp"
+	var backup_path := path + ".bak"
+	var file := FileAccess.open(temporary_path, FileAccess.WRITE)
+	if file == null:
+		return FileAccess.get_open_error()
+	file.store_var(payload, false)
+	file.flush()
+	var write_error := file.get_error()
+	file.close()
+	if write_error != OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(temporary_path))
+		return write_error
+
+	var absolute_final := ProjectSettings.globalize_path(path)
+	var absolute_temporary := ProjectSettings.globalize_path(temporary_path)
+	var absolute_backup := ProjectSettings.globalize_path(backup_path)
+	var had_previous := FileAccess.file_exists(path)
+	if had_previous:
+		if FileAccess.file_exists(backup_path):
+			var remove_error := DirAccess.remove_absolute(absolute_backup)
+			if remove_error != OK:
+				DirAccess.remove_absolute(absolute_temporary)
+				return remove_error
+		var backup_error := DirAccess.rename_absolute(absolute_final, absolute_backup)
+		if backup_error != OK:
+			DirAccess.remove_absolute(absolute_temporary)
+			return backup_error
+
+	var replace_error := DirAccess.rename_absolute(absolute_temporary, absolute_final)
+	if replace_error != OK:
+		if had_previous:
+			DirAccess.rename_absolute(absolute_backup, absolute_final)
+		return replace_error
+	if had_previous:
+		DirAccess.remove_absolute(absolute_backup)
+	return OK
+
+
 func _write_metadata_atomic(world_id: String, metadata: Dictionary) -> Error:
 	var final_path := _metadata_path(world_id)
 	var temporary_path := final_path + ".tmp"
@@ -247,6 +464,12 @@ func _world_directory(world_id: String) -> String:
 
 func _metadata_path(world_id: String) -> String:
 	return _world_directory(world_id).path_join(WORLD_METADATA_FILE)
+
+
+func _chunk_path(world_id: String, chunk_position: Vector2i) -> String:
+	return _world_directory(world_id).path_join(CHUNKS_DIRECTORY).path_join(
+		"%d_%d.dat" % [chunk_position.x, chunk_position.y]
+	)
 
 
 func _is_safe_world_id(world_id: String) -> bool:

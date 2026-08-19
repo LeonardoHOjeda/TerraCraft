@@ -1,6 +1,8 @@
 class_name GameplayBootstrap
 extends Node3D
 
+const AUTOSAVE_INTERVAL_SECONDS := 45.0
+
 var bootstrap_error := ""
 
 
@@ -15,7 +17,12 @@ func _enter_tree() -> void:
 	if world == null:
 		_abort_bootstrap("Gameplay cannot start because its World node is missing.")
 		return
-	var configure_error := world.configure(int(metadata["seed"]))
+	var loaded_data := WorldManager.get_active_world_chunk_data()
+	var configure_error := world.configure(
+		int(metadata["seed"]),
+		loaded_data.get("overrides", {}),
+		loaded_data.get("special", {})
+	)
 	if configure_error != OK:
 		_abort_bootstrap("Gameplay could not configure World before generation started.")
 
@@ -23,6 +30,27 @@ func _enter_tree() -> void:
 func _ready() -> void:
 	if not bootstrap_error.is_empty():
 		_show_bootstrap_error()
+		return
+	var autosave_timer := Timer.new()
+	autosave_timer.name = "WorldAutosaveTimer"
+	autosave_timer.wait_time = AUTOSAVE_INTERVAL_SECONDS
+	autosave_timer.autostart = true
+	autosave_timer.timeout.connect(save_world_changes)
+	add_child(autosave_timer)
+
+
+func save_world_changes() -> Dictionary:
+	var world := get_node_or_null("World") as World
+	if world == null:
+		return {"ok": false, "error": "Gameplay World node is unavailable."}
+	return WorldManager.save_active_world_changes(world)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and bootstrap_error.is_empty():
+		var result := save_world_changes()
+		if not result.get("ok", false):
+			push_error("Could not save active world changes during shutdown: %s" % result.get("error", "Unknown error"))
 
 
 func _validate_active_world(metadata: Dictionary) -> String:
