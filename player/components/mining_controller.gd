@@ -94,6 +94,8 @@ func break_target_block(target) -> void:
 	if broken_block == BlockRegistry.Block.AIR:
 		return
 	world.rebuild_chunk_and_neighbors(chunk, local_position)
+	if broken_block == BlockRegistry.Block.WOOD or broken_block == BlockRegistry.Block.LEAVES:
+		world.queue_leaf_checks_around(block_position)
 	world.break_torches_supported_by(block_position)
 	var dropped_item := ItemRegistry.get_drop(broken_block)
 	if dropped_item == ItemRegistry.Item.NONE:

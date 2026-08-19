@@ -3,6 +3,14 @@ extends Node3D
 
 const INVALID_CHUNK_POSITION := Vector2i(2147483647, 2147483647)
 const MAX_TREE_LOGS := 64
+const LEAF_SUPPORT_DISTANCE := 6
+const MAX_LEAF_BFS_NODES := 256
+const LEAF_DECAY_DELAY_SECONDS := 0.45
+const LEAF_DISAPPEAR_MIN_MSEC := 500
+const LEAF_DISAPPEAR_MAX_MSEC := 3000
+const LEAF_AMBIGUOUS_RETRY_SECONDS := 1.0
+const MAX_LEAF_VALIDATIONS_PER_FRAME := 4
+const MAX_LEAVES_REMOVED_PER_FRAME := 4
 const MAX_BACKGROUND_STREAMING_JOBS := 1
 const USE_CSHARP_CHUNK_MESHER := true
 const USE_CSHARP_CHUNK_GENERATOR := true
@@ -115,6 +123,8 @@ var streaming_targets_unloaded_count: int = 0
 var streaming_targets_unload_profiles: Array[Dictionary] = []
 var pending_chunk_unloads: Array[Vector2i] = []
 var queued_chunk_unloads: Dictionary = {}
+var pending_leaf_checks: Dictionary = {}
+var pending_leaf_decay: Dictionary = {}
 
 
 func _ready() -> void:
@@ -151,6 +161,8 @@ func _process(_delta: float) -> void:
 		current_player_chunk = new_player_chunk
 		update_streaming_targets()
 	process_pending_chunk_unloads()
+	process_pending_leaf_checks()
+	process_pending_leaf_decay()
 	streaming_targets_update_usec = Time.get_ticks_usec() - targets_started_at
 
 	begin_streaming_main_frame()
@@ -1605,6 +1617,15 @@ func get_block_at_world_position(position: Vector3i) -> int:
 	return chunk.get_block_local(chunk.world_to_local(position))
 
 
+func try_get_block_at_world_position(position: Vector3i) -> Dictionary:
+	if position.y < 0 or position.y >= Chunk.HEIGHT:
+		return {"known": true, "block": BlockRegistry.Block.AIR}
+	var chunk := get_chunk_at_world_position(position)
+	if chunk == null:
+		return {"known": false, "block": BlockRegistry.Block.AIR}
+	return {"known": true, "block": chunk.get_block_local(chunk.world_to_local(position))}
+
+
 func get_block_light_at_world_position(position: Vector3i) -> int:
 	var chunk := get_chunk_at_world_position(position)
 	if chunk == null:
@@ -2086,8 +2107,8 @@ func fell_tree(start_position: Vector3i) -> bool:
 	if logs.is_empty():
 		return false
 
-	var rebuild_sections: Dictionary = {}
 	var modified_chunks: Dictionary = {}
+	var removed_positions: Array[Vector3i] = []
 	for position in logs:
 		var chunk := get_chunk_at_world_position(position)
 		if chunk == null:
@@ -2099,22 +2120,14 @@ func fell_tree(start_position: Vector3i) -> bool:
 		break_torches_supported_by(position)
 		record_block_override(chunk, local_position)
 		modified_chunks[chunk.chunk_position] = true
-		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position)
-		for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
-			add_tree_neighbor_rebuild_target(
-				rebuild_sections, chunk.chunk_position, neighbor_position, local_position
-			)
+		removed_positions.append(position)
+		queue_leaf_checks_around(position)
 		var dropped_item := ItemRegistry.get_drop(broken_block)
 		if dropped_item != ItemRegistry.Item.NONE:
 			var drop_offset := Vector3(randf_range(-0.18, 0.18), 0.5, randf_range(-0.18, 0.18))
 			spawn_item(dropped_item, Vector3(position) + Vector3(0.5, 0.0, 0.5) + drop_offset)
 
-	for chunk_position in rebuild_sections:
-		var sections: Array[int] = []
-		for section in rebuild_sections[chunk_position]:
-			sections.append(section)
-		sections.sort()
-		request_chunk_rebuild(chunk_position, true, sections)
+	apply_removed_blocks_batch(removed_positions)
 
 	if log_tree_felling:
 		print("Tree felled: %d logs across %d chunks" % [logs.size(), modified_chunks.size()])
@@ -2297,6 +2310,164 @@ func rebuild_chunk_and_neighbors(chunk: Chunk, local_position: Vector3i) -> void
 	for changed_position in sun_changed_chunks:
 		if changed_position != chunk.chunk_position and not chunk.get_affected_neighbor_positions(local_position).has(changed_position):
 			request_chunk_rebuild(changed_position, true)
+
+
+func queue_leaf_checks_around(world_position: Vector3i) -> void:
+	for direction in TREE_LOG_DIRECTIONS:
+		queue_leaf_check(world_position + direction)
+
+
+func queue_leaf_check(world_position: Vector3i, delay_seconds: float = LEAF_DECAY_DELAY_SECONDS) -> void:
+	var block_result := try_get_block_at_world_position(world_position)
+	if not bool(block_result["known"]) or int(block_result["block"]) != BlockRegistry.Block.LEAVES:
+		return
+	var due_msec := Time.get_ticks_msec() + roundi(delay_seconds * 1000.0)
+	if pending_leaf_checks.has(world_position):
+		pending_leaf_checks[world_position] = mini(int(pending_leaf_checks[world_position]), due_msec)
+	else:
+		pending_leaf_checks[world_position] = due_msec
+
+
+func process_pending_leaf_checks() -> void:
+	if pending_leaf_checks.is_empty():
+		return
+	var now_msec := Time.get_ticks_msec()
+	var validations := 0
+	for position in pending_leaf_checks.keys():
+		if validations >= MAX_LEAF_VALIDATIONS_PER_FRAME:
+			break
+		if int(pending_leaf_checks[position]) > now_msec:
+			continue
+		pending_leaf_checks.erase(position)
+		validations += 1
+		var support_result := check_leaf_support(position)
+		if bool(support_result["ambiguous"]):
+			queue_leaf_check(position, LEAF_AMBIGUOUS_RETRY_SECONDS)
+		elif not bool(support_result["supported"]):
+			schedule_leaf_decay(position)
+
+
+func schedule_leaf_decay(world_position: Vector3i) -> void:
+	if pending_leaf_decay.has(world_position):
+		return
+	var delay_range := LEAF_DISAPPEAR_MAX_MSEC - LEAF_DISAPPEAR_MIN_MSEC + 1
+	var position_hash := int(hash(world_position)) & 0x7fffffff
+	var delay_msec := LEAF_DISAPPEAR_MIN_MSEC + position_hash % delay_range
+	pending_leaf_decay[world_position] = Time.get_ticks_msec() + delay_msec
+	queue_leaf_checks_around(world_position)
+
+
+func process_pending_leaf_decay() -> void:
+	if pending_leaf_decay.is_empty():
+		return
+	var now_msec := Time.get_ticks_msec()
+	var validations := 0
+	var leaves_to_remove: Array[Vector3i] = []
+	for position in pending_leaf_decay.keys():
+		if validations >= MAX_LEAF_VALIDATIONS_PER_FRAME or leaves_to_remove.size() >= MAX_LEAVES_REMOVED_PER_FRAME:
+			break
+		if int(pending_leaf_decay[position]) > now_msec:
+			continue
+		pending_leaf_decay.erase(position)
+		validations += 1
+		var support_result := check_leaf_support(position)
+		if bool(support_result["ambiguous"]):
+			pending_leaf_decay[position] = now_msec + roundi(LEAF_AMBIGUOUS_RETRY_SECONDS * 1000.0)
+		elif not bool(support_result["supported"]):
+			leaves_to_remove.append(position)
+	remove_leaves_batch(leaves_to_remove)
+
+
+func check_leaf_support(start_position: Vector3i) -> Dictionary:
+	var start_result := try_get_block_at_world_position(start_position)
+	if not bool(start_result["known"]):
+		return {"supported": false, "ambiguous": true}
+	if int(start_result["block"]) != BlockRegistry.Block.LEAVES:
+		return {"supported": true, "ambiguous": false}
+	var frontier: Array[Dictionary] = [{"position": start_position, "distance": 0}]
+	var visited: Dictionary = {start_position: true}
+	var frontier_index := 0
+	while frontier_index < frontier.size():
+		var entry: Dictionary = frontier[frontier_index]
+		frontier_index += 1
+		var position: Vector3i = entry["position"]
+		var distance: int = entry["distance"]
+		if distance >= LEAF_SUPPORT_DISTANCE:
+			continue
+		for direction in TREE_LOG_DIRECTIONS:
+			var neighbor := position + direction
+			var block_result := try_get_block_at_world_position(neighbor)
+			if not bool(block_result["known"]):
+				return {"supported": false, "ambiguous": true}
+			var block := int(block_result["block"])
+			if block == BlockRegistry.Block.WOOD:
+				return {"supported": true, "ambiguous": false}
+			if block != BlockRegistry.Block.LEAVES or visited.has(neighbor):
+				continue
+			if visited.size() >= MAX_LEAF_BFS_NODES:
+				return {"supported": false, "ambiguous": true}
+			visited[neighbor] = true
+			frontier.append({"position": neighbor, "distance": distance + 1})
+	return {"supported": false, "ambiguous": false}
+
+
+func remove_leaves_batch(world_positions: Array[Vector3i]) -> void:
+	var removed_positions: Array[Vector3i] = []
+	for world_position in world_positions:
+		var chunk := get_chunk_at_world_position(world_position)
+		if chunk == null:
+			continue
+		var local_position := chunk.world_to_local(world_position)
+		if chunk.get_block_local(local_position) != BlockRegistry.Block.LEAVES:
+			continue
+		if chunk.remove_block_local(local_position) != BlockRegistry.Block.LEAVES:
+			continue
+		record_block_override(chunk, local_position)
+		removed_positions.append(world_position)
+		queue_leaf_checks_around(world_position)
+	apply_removed_blocks_batch(removed_positions)
+
+
+func apply_removed_blocks_batch(world_positions: Array[Vector3i]) -> void:
+	if world_positions.is_empty():
+		return
+	var rebuild_sections: Dictionary = {}
+	var light_changed_chunks: Dictionary = {}
+	var sun_changed_chunks: Dictionary = {}
+	var sunlight_columns: Dictionary = {}
+	for world_position in world_positions:
+		var chunk := get_chunk_at_world_position(world_position)
+		if chunk == null:
+			continue
+		var local_position := chunk.world_to_local(world_position)
+		add_tree_rebuild_target(rebuild_sections, chunk.chunk_position, local_position)
+		for neighbor_position in chunk.get_affected_neighbor_positions(local_position):
+			add_tree_neighbor_rebuild_target(
+				rebuild_sections, chunk.chunk_position, neighbor_position, local_position
+			)
+		merge_chunk_set(light_changed_chunks, update_block_light_after_change(world_position))
+		var column := Vector2i(world_position.x, world_position.z)
+		if not sunlight_columns.has(column):
+			sunlight_columns[column] = world_position
+	for world_position in sunlight_columns.values():
+		merge_chunk_set(sun_changed_chunks, update_sunlight_after_change(world_position))
+	for changed_position in light_changed_chunks:
+		if not rebuild_sections.has(changed_position):
+			rebuild_sections[changed_position] = {}
+	for changed_position in sun_changed_chunks:
+		if not rebuild_sections.has(changed_position):
+			rebuild_sections[changed_position] = {}
+	for chunk_position in rebuild_sections:
+		var sections: Array[int] = []
+		for section in rebuild_sections[chunk_position]:
+			sections.append(section)
+		sections.sort()
+		request_chunk_rebuild(chunk_position, true, sections)
+
+
+func merge_chunk_set(target: Dictionary, source: Dictionary) -> void:
+	for chunk_position in source:
+		target[chunk_position] = true
 
 
 func get_affected_collision_regions(local_position: Vector3i) -> Array[int]:

@@ -53,6 +53,8 @@ func place_block() -> void:
 		placed = target_chunk.place_block_local(local_position, selected_block)
 	if placed:
 		world.rebuild_chunk_and_neighbors(target_chunk, local_position)
+		if selected_block == BlockRegistry.Block.WOOD:
+			world.queue_leaf_checks_around(block_position)
 		hotbar_controller.consume_selected_item(1)
 
 func is_block_inside_player(block_position: Vector3i) -> bool:
