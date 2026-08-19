@@ -1876,6 +1876,14 @@ func get_chunk_at_world_position(world_position: Vector3i) -> Chunk:
 	return loaded_chunks.get(chunk_position) as Chunk
 
 
+func is_chunk_collision_ready_for_world_position(world_position: Vector3) -> bool:
+	var block_position := Vector3i(
+		floori(world_position.x), floori(world_position.y), floori(world_position.z)
+	)
+	var chunk := get_chunk_at_world_position(block_position)
+	return chunk != null and chunk.collision_active
+
+
 func get_block_at_world_position(position: Vector3i) -> int:
 	var chunk := get_chunk_at_world_position(position)
 	if chunk == null:

@@ -35,6 +35,34 @@ func get_amount(index: int) -> int:
 	return amounts[index]
 
 
+func export_state() -> Array[Dictionary]:
+	var slots: Array[Dictionary] = []
+	for index in TOTAL_SLOT_COUNT:
+		slots.append({"item": get_item(index), "amount": get_amount(index)})
+	return slots
+
+
+func import_state(slots: Array) -> void:
+	if slots.size() != TOTAL_SLOT_COUNT:
+		return
+	for index in TOTAL_SLOT_COUNT:
+		var item_id := ItemRegistry.Item.NONE
+		var amount := 0
+		if slots[index] is Dictionary:
+			var slot: Dictionary = slots[index]
+			if slot.get("item") is int and slot.get("amount") is int:
+				item_id = int(slot["item"])
+				amount = int(slot["amount"])
+		if item_id < ItemRegistry.Item.NONE or item_id >= ItemRegistry.Item.size():
+			item_id = ItemRegistry.Item.NONE
+		if item_id == ItemRegistry.Item.NONE or amount <= 0:
+			item_id = ItemRegistry.Item.NONE
+			amount = 0
+		else:
+			amount = mini(amount, ItemRegistry.get_max_stack(item_id))
+		set_slot(index, item_id, amount)
+
+
 func add_item(
 	item_id: int,
 	amount: int = 1

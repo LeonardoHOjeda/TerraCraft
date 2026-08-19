@@ -2,8 +2,13 @@ class_name GameplayBootstrap
 extends Node3D
 
 const AUTOSAVE_INTERVAL_SECONDS := 45.0
+const SPAWN_READY_TIMEOUT_SECONDS := 30.0
+const SPAWN_RECOVERY_HEIGHT := 16
 
 var bootstrap_error := ""
+var loaded_player_state: Dictionary = {}
+var spawn_wait_elapsed := 0.0
+var waiting_for_spawn := false
 
 
 func _enter_tree() -> void:
@@ -14,9 +19,15 @@ func _enter_tree() -> void:
 		return
 
 	var world := get_node_or_null("World") as World
+	var player := get_node_or_null("Player") as Player
 	if world == null:
 		_abort_bootstrap("Gameplay cannot start because its World node is missing.")
 		return
+	if player == null:
+		_abort_bootstrap("Gameplay cannot start because its Player node is missing.")
+		return
+	loaded_player_state = WorldManager.get_active_player_state()
+	player.apply_saved_transform(loaded_player_state)
 	var loaded_data := WorldManager.get_active_world_chunk_data()
 	var configure_error := world.configure(
 		int(metadata["seed"]),
@@ -31,6 +42,11 @@ func _ready() -> void:
 	if not bootstrap_error.is_empty():
 		_show_bootstrap_error()
 		return
+	var player := get_node("Player") as Player
+	player.import_state(loaded_player_state)
+	player.begin_spawn_wait()
+	waiting_for_spawn = true
+	set_process(true)
 	var autosave_timer := Timer.new()
 	autosave_timer.name = "WorldAutosaveTimer"
 	autosave_timer.wait_time = AUTOSAVE_INTERVAL_SECONDS
@@ -39,11 +55,46 @@ func _ready() -> void:
 	add_child(autosave_timer)
 
 
+func _process(delta: float) -> void:
+	if not waiting_for_spawn:
+		return
+	var world := get_node_or_null("World") as World
+	var player := get_node_or_null("Player") as Player
+	if world == null or player == null:
+		waiting_for_spawn = false
+		return
+	if world.is_chunk_collision_ready_for_world_position(player.global_position):
+		if _recover_player_vertical_space(player):
+			player.finish_spawn_wait()
+		else:
+			push_error("Player remains disabled because no safe vertical recovery position was found.")
+		waiting_for_spawn = false
+		return
+	spawn_wait_elapsed += delta
+	if spawn_wait_elapsed >= SPAWN_READY_TIMEOUT_SECONDS:
+		waiting_for_spawn = false
+		push_error("Player spawn timed out while waiting for the central chunk collider; the player remains disabled.")
+
+
+func _recover_player_vertical_space(player: Player) -> bool:
+	if player.is_body_space_free():
+		return true
+	var saved_position := player.global_position
+	for offset in range(1, SPAWN_RECOVERY_HEIGHT + 1):
+		player.global_position = saved_position + Vector3.UP * offset
+		if player.is_body_space_free():
+			return true
+	player.global_position = saved_position
+	push_warning("No free vertical recovery position was found near the saved player position.")
+	return false
+
+
 func save_world_changes() -> Dictionary:
 	var world := get_node_or_null("World") as World
-	if world == null:
-		return {"ok": false, "error": "Gameplay World node is unavailable."}
-	return WorldManager.save_active_world_changes(world)
+	var player := get_node_or_null("Player") as Player
+	if world == null or player == null:
+		return {"ok": false, "error": "Gameplay World or Player node is unavailable."}
+	return WorldManager.save_active_world_changes(world, player)
 
 
 func _notification(what: int) -> void:

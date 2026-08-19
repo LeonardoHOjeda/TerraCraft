@@ -4,6 +4,7 @@ const SAVE_VERSION := 1
 const GENERATOR_VERSION := 1
 const WORLDS_DIRECTORY := "user://worlds"
 const WORLD_METADATA_FILE := "world.json"
+const PLAYER_FILE := "player.json"
 const CHUNKS_DIRECTORY := "chunks"
 const GAMEPLAY_SCENE := "res://game/game.tscn"
 const MIN_SEED := -2147483648
@@ -13,6 +14,7 @@ var active_world_id := ""
 var active_world_metadata: Dictionary = {}
 var active_chunk_overrides: Dictionary = {}
 var active_special_block_metadata: Dictionary = {}
+var active_player_state: Dictionary = {}
 
 
 func _ready() -> void:
@@ -96,6 +98,7 @@ func open_world(world_id: String, load_gameplay: bool = true) -> Dictionary:
 
 	var metadata: Dictionary = read_result["metadata"]
 	var chunk_data_result := _load_all_chunk_data(world_id)
+	var player_state := _load_player_state(world_id)
 	metadata["last_played_at"] = _utc_timestamp()
 	var write_error := _write_metadata_atomic(world_id, metadata)
 	if write_error != OK:
@@ -105,6 +108,7 @@ func open_world(world_id: String, load_gameplay: bool = true) -> Dictionary:
 	active_world_metadata = metadata.duplicate(true)
 	active_chunk_overrides = chunk_data_result["overrides"]
 	active_special_block_metadata = chunk_data_result["special"]
+	active_player_state = player_state
 	if load_gameplay:
 		var scene_error := get_tree().change_scene_to_file(GAMEPLAY_SCENE)
 		if scene_error != OK:
@@ -118,6 +122,7 @@ func clear_active_world() -> void:
 	active_world_metadata.clear()
 	active_chunk_overrides.clear()
 	active_special_block_metadata.clear()
+	active_player_state.clear()
 
 
 func get_active_world_metadata() -> Dictionary:
@@ -131,7 +136,11 @@ func get_active_world_chunk_data() -> Dictionary:
 	}
 
 
-func save_active_world_changes(world: World) -> Dictionary:
+func get_active_player_state() -> Dictionary:
+	return active_player_state.duplicate(true)
+
+
+func save_active_world_changes(world: World, player: Player = null) -> Dictionary:
 	if active_world_id.is_empty() or active_world_metadata.is_empty():
 		return _failure("Cannot save changes without an active world.")
 	if world == null:
@@ -149,14 +158,28 @@ func save_active_world_changes(world: World) -> Dictionary:
 		else:
 			failed_chunks.append({"chunk": chunk_position, "error_code": save_error})
 
-	if not failed_chunks.is_empty():
+	var player_error := OK
+	if player != null:
+		var player_payload := player.export_state().duplicate(true)
+		player_error = _write_json_atomic(_player_path(active_world_id), player_payload)
+		if player_error == OK:
+			active_player_state = _normalize_player_payload(player_payload)
+
+	if not failed_chunks.is_empty() or player_error != OK:
 		return {
 			"ok": false,
-			"error": "One or more chunk files could not be saved.",
+			"error": "One or more world files could not be saved.",
 			"saved_chunks": saved_chunks,
 			"failed_chunks": failed_chunks,
+			"player_error": player_error,
 		}
-	return {"ok": true, "error": "", "saved_chunks": saved_chunks, "failed_chunks": []}
+	return {
+		"ok": true,
+		"error": "",
+		"saved_chunks": saved_chunks,
+		"failed_chunks": [],
+		"player_error": OK,
+	}
 
 
 func _cache_saved_chunk_payload(chunk_position: Vector2i, payload: Dictionary) -> void:
@@ -258,6 +281,88 @@ func _validate_metadata(world_id: String, metadata: Dictionary) -> String:
 	metadata["generator_version"] = int(metadata["generator_version"])
 	metadata["seed"] = seed_value
 	return ""
+
+
+func _load_player_state(world_id: String) -> Dictionary:
+	var path := _player_path(world_id)
+	if not FileAccess.file_exists(path):
+		return {}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		push_warning("Could not read player save for world '%s'. Using defaults." % world_id)
+		return {}
+	var json_text := file.get_as_text()
+	file.close()
+	var json := JSON.new()
+	if json.parse(json_text) != OK or not json.data is Dictionary:
+		push_warning("Player save for world '%s' is corrupt. Using defaults." % world_id)
+		return {}
+	var payload: Dictionary = json.data
+	if not _is_integer_number(payload.get("save_version")) or int(payload["save_version"]) != SAVE_VERSION:
+		push_warning("Player save for world '%s' has an unsupported version. Using defaults." % world_id)
+		return {}
+	return _normalize_player_payload(payload)
+
+
+func _normalize_player_payload(payload: Dictionary) -> Dictionary:
+	var normalized := {
+		"save_version": SAVE_VERSION,
+		"selected_hotbar_slot": 0,
+		"inventory": _empty_inventory_state(),
+	}
+	var position: Variant = payload.get("position")
+	if (
+		position is Array
+		and position.size() == 3
+		and _is_finite_number(position[0])
+		and _is_finite_number(position[1])
+		and _is_finite_number(position[2])
+	):
+		normalized["position"] = Vector3(
+			float(position[0]), float(position[1]), float(position[2])
+		)
+	if _is_finite_number(payload.get("body_yaw")):
+		normalized["body_yaw"] = float(payload["body_yaw"])
+	if _is_finite_number(payload.get("camera_pitch")):
+		normalized["camera_pitch"] = float(payload["camera_pitch"])
+	if _is_integer_number(payload.get("selected_hotbar_slot")):
+		var selected_slot := int(payload["selected_hotbar_slot"])
+		if selected_slot >= 0 and selected_slot < Inventory.HOTBAR_SLOT_COUNT:
+			normalized["selected_hotbar_slot"] = selected_slot
+	var inventory: Variant = payload.get("inventory")
+	if inventory is Array and inventory.size() == Inventory.TOTAL_SLOT_COUNT:
+		var slots: Array[Dictionary] = []
+		for raw_slot in inventory:
+			slots.append(_normalize_inventory_slot(raw_slot))
+		normalized["inventory"] = slots
+	return normalized
+
+
+func _normalize_inventory_slot(raw_slot: Variant) -> Dictionary:
+	var empty_slot := {"item": ItemRegistry.Item.NONE, "amount": 0}
+	if not raw_slot is Dictionary:
+		return empty_slot
+	if not _is_integer_number(raw_slot.get("item")) or not _is_integer_number(raw_slot.get("amount")):
+		return empty_slot
+	var item_id := int(raw_slot["item"])
+	var amount := int(raw_slot["amount"])
+	if item_id <= ItemRegistry.Item.NONE or item_id >= ItemRegistry.Item.size():
+		return empty_slot
+	var max_stack := ItemRegistry.get_max_stack(item_id)
+	if amount <= 0 or amount > max_stack:
+		return empty_slot
+	return {"item": item_id, "amount": amount}
+
+
+func _empty_inventory_state() -> Array[Dictionary]:
+	var slots: Array[Dictionary] = []
+	for _index in Inventory.TOTAL_SLOT_COUNT:
+		slots.append({"item": ItemRegistry.Item.NONE, "amount": 0})
+	return slots
+
+
+func _is_finite_number(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value))
 
 
 func _load_all_chunk_data(world_id: String) -> Dictionary:
@@ -423,13 +528,16 @@ func _write_chunk_payload_atomic(path: String, payload: Dictionary) -> Error:
 
 
 func _write_metadata_atomic(world_id: String, metadata: Dictionary) -> Error:
-	var final_path := _metadata_path(world_id)
+	return _write_json_atomic(_metadata_path(world_id), metadata)
+
+
+func _write_json_atomic(final_path: String, payload: Dictionary) -> Error:
 	var temporary_path := final_path + ".tmp"
 	var backup_path := final_path + ".bak"
 	var file := FileAccess.open(temporary_path, FileAccess.WRITE)
 	if file == null:
 		return FileAccess.get_open_error()
-	file.store_string(JSON.stringify(metadata, "\t") + "\n")
+	file.store_string(JSON.stringify(payload, "\t") + "\n")
 	file.flush()
 	var write_error := file.get_error()
 	file.close()
@@ -464,6 +572,10 @@ func _world_directory(world_id: String) -> String:
 
 func _metadata_path(world_id: String) -> String:
 	return _world_directory(world_id).path_join(WORLD_METADATA_FILE)
+
+
+func _player_path(world_id: String) -> String:
+	return _world_directory(world_id).path_join(PLAYER_FILE)
 
 
 func _chunk_path(world_id: String, chunk_position: Vector2i) -> String:

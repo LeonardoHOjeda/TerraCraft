@@ -35,6 +35,7 @@ var station_detector: StationDetector
 var hotbar_controller: HotbarController
 var interaction_state: PlayerInteractionState
 var targeting_controller: BlockTargetingController
+var spawn_wait_active := false
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -43,6 +44,58 @@ func _ready() -> void:
 	setup_components()
 	hotbar_controller.selected_item_changed.connect(update_held_item_light)
 	update_held_item_light(hotbar_controller.get_selected_item())
+
+
+func apply_saved_transform(state: Dictionary) -> void:
+	if state.has("position"):
+		if is_inside_tree():
+			global_position = state["position"]
+		else:
+			position = state["position"]
+	if state.has("body_yaw"):
+		rotation.y = float(state["body_yaw"])
+	if state.has("camera_pitch"):
+		$Camera3D.rotation.x = clampf(float(state["camera_pitch"]), deg_to_rad(-89.0), deg_to_rad(89.0))
+	$Camera3D.rotation.z = 0.0
+
+
+func import_state(state: Dictionary) -> void:
+	if state.has("inventory"):
+		inventory.import_state(state["inventory"])
+	var selected_slot := int(state.get("selected_hotbar_slot", 0))
+	hotbar_controller.select_slot(clampi(selected_slot, 0, Inventory.HOTBAR_SLOT_COUNT - 1))
+	update_held_item_light(hotbar_controller.get_selected_item())
+
+
+func export_state() -> Dictionary:
+	return {
+		"save_version": 1,
+		"position": [global_position.x, global_position.y, global_position.z],
+		"body_yaw": rotation.y,
+		"camera_pitch": camera.rotation.x,
+		"selected_hotbar_slot": hotbar_controller.selected_slot,
+		"inventory": inventory.export_state(),
+	}
+
+
+func begin_spawn_wait() -> void:
+	spawn_wait_active = true
+	velocity = Vector3.ZERO
+	set_physics_process(false)
+	set_process_unhandled_input(false)
+	if collision_shape != null:
+		collision_shape.disabled = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func finish_spawn_wait() -> void:
+	spawn_wait_active = false
+	velocity = Vector3.ZERO
+	if collision_shape != null:
+		collision_shape.disabled = false
+	set_physics_process(true)
+	set_process_unhandled_input(true)
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func setup_components() -> void:
 	interaction_state = PlayerInteractionState.new()
